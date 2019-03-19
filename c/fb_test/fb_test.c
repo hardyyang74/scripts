@@ -7,23 +7,6 @@
 #include <sys/mman.h>
 #include <string.h>
 
-typedef struct _BMP_HEADER
-{
-    char    cfType[2];//文件类型，"BM"(0x4D42)
-    unsigned int file_size;
-    unsigned int reserved1;
-    unsigned int data_offset;
-    unsigned int header_size;
-    unsigned int width;
-    unsigned int height;
-    unsigned short planes;
-    unsigned short bpp;
-    unsigned int compression;
-    char ciSizeImage[4];//用字节表示的图像大小，该数据必须是4的倍数
-    char reserved[20];
-} __attribute__((packed)) BMP_HEADER;
-
-#if 0
 //14byte文件头
 typedef struct
 {
@@ -37,17 +20,26 @@ typedef struct
 //40byte信息头
 typedef struct
 {
-    char ciSize[4];//BITMAPFILEHEADER所占的字节数
+    int ciSize;//BITMAPINFOHEADER所占的字节数
     int  ciWidth;//宽度
     int  ciHeight;//高度
-    char ciPlanes[2];//目标设备的位平面数，值为1
-    short ciBitCount;//每个像素的位数
-    char ciCompress[4];//压缩说明
-    char ciSizeImage[4];//用字节表示的图像大小，该数据必须是4的倍数
+    short ciPlanes;//目标设备的位平面数，值为1
+    short ciBitCount;//每个像素的位数, 1, 4, 8, 16, 24 or 32
+    /*
+    * 压缩说明,
+    * 0 BI_RGB（不压缩）
+    * 1 BI_RLE8, for bit8 bitmap only
+     * 2 BI_RLE4, for bit4 bitmap only
+     * 3 BI_BITFIELDS, bit field, for bit16 or bit32 bitmap
+     * 4 BI_JPEG, bitmap include jpeg, for printer only
+     * 5 BI_PNG, bitmap include png, for printer only
+     */
+    int ciCompress;
+    int ciSizeImage;//用字节表示的图像大小，该数据必须是4的倍数
     char ciXPelsPerMeter[4];//目标设备的水平像素数/米
     char ciYPelsPerMeter[4];//目标设备的垂直像素数/米
-    char ciClrUsed[4]; //位图使用调色板的颜色数
-    char ciClrImportant[4]; //指定重要的颜色数，当该域的值等于颜色数时（或者等于0时），表示所有颜色都一样重要
+    int ciClrUsed; //位图使用调色板的颜色数
+    int ciClrImportant; //指定重要的颜色数，当该域的值等于颜色数时（或者等于0时），表示所有颜色都一样重要
 }__attribute__((packed)) BITMAPINFOHEADER;
 
 typedef struct
@@ -57,8 +49,17 @@ typedef struct
     unsigned char red;
     unsigned char reserved;
 }__attribute__((packed)) PIXEL;//颜色模式RGB
-#endif
 
+/*
+-------------------------------------------------
+|segment name    | struct                                                      |size                 |
+-------------------------------------------------
+|file head                | BITMAPFILEHEADER                      |14                   |
+|bitmap info          | BITMAPINFOHEADER                     |40                   |
+|palette                    | PIXEL                                                      |N/A               |
+|raw data                | N/A                                                         | N/A               |
+-------------------------------------------------
+*/
 #define RGB565_MASK_RED        0xF800
 #define RGB565_MASK_GREEN                         0x07E0
 #define RGB565_MASK_BLUE                         0x001F
@@ -101,7 +102,8 @@ unsigned short rgb_24_2_565(const unsigned char *rgb24)
 void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
 {
     FILE *fin = (FILE*)fopen(name, "rb");
-    BMP_HEADER bmp;
+    BITMAPFILEHEADER fhead;
+    BITMAPINFOHEADER bminfo;
     unsigned char* tmpbuf = NULL;
     unsigned short* ptr16;
     unsigned int* ptr32;
@@ -118,9 +120,10 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
     }
 
     // read bmp header
-     ret = fread(&bmp, 1, sizeof(BMP_HEADER), fin);
-    printf("Image info: size %d*%d, bpp %d, compression %d, offset %d\n", bmp.width, bmp.height, bmp.bpp, bmp.compression, bmp.data_offset);
-    if((bmp.bpp!=24) || bmp.compression)
+     ret = fread(&fhead, 1, sizeof(BITMAPFILEHEADER), fin);
+     ret = fread(&bminfo, 1, sizeof(BITMAPINFOHEADER), fin);
+    printf("Image info: size %d*%d, bpp %d, compression %d, offset %d\n", bminfo.ciWidth, bminfo.ciHeight, bminfo.ciBitCount, bminfo.ciCompress, fhead.cfoffBits);
+    if(bminfo.ciBitCount!=24  &&  bminfo.ciBitCount!=16)
     {
         printf("not supported bmp file\n");
         fclose(fin);
@@ -128,7 +131,7 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
     }
 
     // allocate buffer
-    tmpbuf = malloc(bmp.width*bmp.height*bmp.bpp/8 );
+    tmpbuf = malloc(bminfo.ciWidth*bminfo.ciHeight*bminfo.ciBitCount/8 );
     if(tmpbuf == NULL)
     {
         printf("malloc faild\n");
@@ -136,50 +139,65 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
         return;
     }
 
-    fseek(fin, bmp.data_offset, SEEK_SET);
-    ret = fread(tmpbuf, 1, bmp.width*bmp.height*bmp.bpp/8+1024, fin);
+    fseek(fin, fhead.cfoffBits, SEEK_SET);
+    ret = fread(tmpbuf, 1, bminfo.ciWidth*bminfo.ciHeight*bminfo.ciBitCount/8, fin);
     fclose(fin);
 
-    copy_w = (var->xres <= bmp.width) ? var->xres : bmp.width;
-    copy_h = (var->yres <= bmp.height) ? var->yres : bmp.height;
+    copy_w = (var->xres <= bminfo.ciWidth) ? var->xres : bminfo.ciWidth;
+    copy_h = (var->yres <= bminfo.ciHeight) ? var->yres : bminfo.ciHeight;
 
     // copy image into framebuffer
     ptr8 = (unsigned char*) fb;
-    bpl = bmp.width*bmp.bpp/8;
+    bpl = bminfo.ciWidth*bminfo.ciBitCount/8;
     switch(var->bits_per_pixel)
     {
     case 32:
-        for(y=0;y<copy_h;y++)
+        if (24 == bminfo.ciBitCount )
         {
-            for(x=0;x<copy_w;x++)
+            for(y=0;y<copy_h;y++)
             {
-                ptr8[((var->yres-y-1)* var->xres + x)*4] = tmpbuf[y*bpl+x*3];
-                ptr8[((var->yres-y-1)* var->xres + x)*4+1] = tmpbuf[y*bpl+x*3+1];
-                ptr8[((var->yres-y-1)* var->xres + x)*4+2] = tmpbuf[y*bpl+x*3+2];
-                ptr8[((var->yres-y-1)* var->xres + x)*4+3] = 255;
+                for(x=0;x<copy_w;x++)
+                {
+                    ptr8[((var->yres-y-1)* var->xres + x)*4] = tmpbuf[y*bpl+x*3];
+                    ptr8[((var->yres-y-1)* var->xres + x)*4+1] = tmpbuf[y*bpl+x*3+1];
+                    ptr8[((var->yres-y-1)* var->xres + x)*4+2] = tmpbuf[y*bpl+x*3+2];
+                    ptr8[((var->yres-y-1)* var->xres + x)*4+3] = 255;
+                }
+            }
+        }
+        else if (16 == bminfo.ciBitCount  &&  3 == bminfo.ciCompress)
+        {
+            for(y=0;y<copy_h;y++)
+            {
+                for(x=0;x<copy_w;x++)
+                {
+                    rgb565_2_rgb24(ptr8+((var->yres-y-1)* var->xres + x)*4, *(short*)(tmpbuf+y*bpl+x*2));
+                    ptr8[((var->yres-y-1)* var->xres + x)*4+3] = 255;
+                }
             }
         }
 
         break;
 
     case 24:
-        for(y=0;y<copy_h;y++)
-        {
-            for(x=0;x<copy_w;x++)
-            {
-                    ptr8[((var->yres-y-1) * var->xres + x)*4] = tmpbuf[y*bpl+x*3];
-                    ptr8[((var->yres-y-1) * var->xres + x)*4+1] = tmpbuf[y*bpl+x*3+1];
-                    ptr8[((var->yres-y-1) * var->xres + x)*4+2] = tmpbuf[y*bpl+x*3+2];
-            }
-        }
         break;
 
     case 16:
-        for(y=0;y<copy_h;y++)
+        if (24 == bminfo.ciBitCount)
         {
-            for(x=0;x<copy_w;x++)
+            for(y=0;y<copy_h;y++)
             {
-                *(short*)(ptr8+((var->yres-y-1) * var->xres + x)*2) = rgb_24_2_565(tmpbuf + y*bpl+x*3);
+                for(x=0;x<copy_w;x++)
+                {
+                    *(short*)(ptr8+((var->yres-y-1) * var->xres + x)*2) = rgb_24_2_565(tmpbuf + y*bpl+x*3);
+                }
+            }
+        }
+        else // rgb565
+        {
+            for(y=0;y<copy_h;y++)
+            {
+                memcpy(ptr8+(var->yres-y-1) * var->xres *2, tmpbuf + y*bpl, bpl);
             }
         }
         break;
@@ -193,7 +211,9 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
 void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
 {
     FILE *fin = (FILE*)fopen(name, "w");
-    BMP_HEADER bmp;
+    BITMAPFILEHEADER fhead;
+    BITMAPINFOHEADER bminfo;
+    PIXEL rgb_quad[3];//定义调色板
     unsigned char* ptr8;
     int bpl;
     int x, y;
@@ -206,26 +226,28 @@ void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
         return;
     }
 
-    memset((void*)&bmp, 0 , sizeof(BMP_HEADER));
-    bmp.cfType[0] = 'B', bmp.cfType[1] = 'M';
-    bmp.file_size = sizeof(BMP_HEADER) + var->xres * var->yres * 3;
-    bmp.data_offset = sizeof(BMP_HEADER);
-    bmp.header_size = 40;
-    bmp.width = var->xres;
-    bmp.height = var->yres;
-    bmp.bpp = 24;
-    bmp.compression = 0;
-    bmp.ciSizeImage[4] = var->xres * var->yres * 3;
+    memset((void*)&fhead, 0 , sizeof(BITMAPFILEHEADER));
+    memset((void*)&bminfo, 0 , sizeof(BITMAPINFOHEADER));
 
-    // read bmp header
-    printf("Image info: size %d*%d, bpp %d, compression %d, offset %d\n", bmp.width, bmp.height, bmp.bpp, bmp.compression, bmp.data_offset);
-    fwrite(&bmp, 1, sizeof(BMP_HEADER), fin);
+    fhead.cfType[0] = 'B', fhead.cfType[1] = 'M';
+    bminfo.ciSize = sizeof(BITMAPINFOHEADER);
+    bminfo.ciWidth = var->xres;
+    bminfo.ciHeight = var->yres;
+    bminfo.ciPlanes = 1;
 
     // write image data
     ptr8 = (unsigned char*) fb;
     switch(var->bits_per_pixel)
     {
     case 32:
+        bminfo.ciBitCount = 24;
+        bminfo.ciSizeImage = var->xres * var->yres * 3;
+
+        bminfo.ciCompress = 0;
+        fhead.cfoffBits = sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER);
+        fhead.cfSize = fhead.cfoffBits + var->xres * var->yres * 3;
+        fseek(fin, fhead.cfoffBits, SEEK_SET);
+
         for (y=0; y<var->yres; y++)
         {
             for(x=0; x<var->xres; x++)
@@ -239,6 +261,36 @@ void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
         break;
 
     case 16:
+#if 1        //
+        bminfo.ciBitCount = 16;
+        bminfo.ciCompress = 3; //BI_BITFIELDS;//位域存放方式，根据调色板掩码知道RGB占bit数
+        fhead.cfoffBits = sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER) + sizeof(rgb_quad);
+
+        bminfo.ciSizeImage = var->xres * var->yres * 2;
+        fhead.cfSize = fhead.cfoffBits + bminfo.ciSizeImage;
+
+        //RGB565格式掩码
+        *(int*)rgb_quad = RGB565_MASK_RED;
+        *(int*)(rgb_quad+1) = RGB565_MASK_GREEN;
+        *(int*)(rgb_quad+2) = RGB565_MASK_BLUE;
+        fseek(fin, sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER), SEEK_SET);
+        fwrite(&rgb_quad, 1, sizeof(rgb_quad), fin);
+
+        fseek(fin, fhead.cfoffBits, SEEK_SET);
+        for (y=0; y<var->yres; y++)
+        {
+            fwrite(ptr8 + (var->yres-y-1)* var->xres*2, 2, var->xres, fin);
+        }
+#else
+        // save 24 bpp
+        bminfo.ciBitCount = 24;
+        bminfo.ciSizeImage = var->xres * var->yres * 3;
+
+        bminfo.ciCompress = 0;
+        fhead.cfoffBits = sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER);
+        fhead.cfSize = fhead.cfoffBits + var->xres * var->yres * 3;
+        fseek(fin, fhead.cfoffBits, SEEK_SET);
+
         for (y=0; y<var->yres; y++)
         {
             for(x=0; x<var->xres; x++)
@@ -247,11 +299,18 @@ void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
                 fwrite(rgb24, 1, sizeof(rgb24), fin);
             }
         }
+#endif
         break;
 
     default:
         break;
     }
+
+    // save bmp header
+    printf("Image info: size %d*%d, bpp %d, compression %d, offset %d\n", bminfo.ciWidth, bminfo.ciHeight, bminfo.ciBitCount, bminfo.ciCompress, fhead.cfoffBits);
+    fseek(fin, 0, SEEK_SET);
+    fwrite(&fhead, 1, sizeof(BITMAPFILEHEADER), fin);
+    fwrite(&bminfo, 1, sizeof(BITMAPINFOHEADER), fin);
 
     fflush(fin);
     fclose(fin);
