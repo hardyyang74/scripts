@@ -206,6 +206,8 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
         break;
 
     }
+
+    free(tmpbuf);
 }
 
 void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
@@ -406,7 +408,6 @@ int main (int argc, char *argv[])
     int fp=0;
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
-    long screensize=0;
     char *fbp = 0;
 
     char devfb[128] = "/dev/fb0";
@@ -414,7 +415,7 @@ int main (int argc, char *argv[])
 
     if (3 == argc)
     {
-        if (NULL != strstr(argv[1], "/dev/fb") )
+        if (NULL != strstr(argv[1], "/dev/") )
         {
             strcpy(devfb, argv[1]);
             strcpy(bmpname, argv[2]);
@@ -458,8 +459,7 @@ int main (int argc, char *argv[])
     printf("------------G:offset:%d,length:%d,msb_right:%d\n",vinfo.green.offset,vinfo.green.length,vinfo.green.msb_right);
     printf("------------B:offset:%d,length:%d,msb_right:%d\n",vinfo.blue.offset,vinfo.blue.length,vinfo.blue.msb_right);
 
-    screensize = vinfo.xres * vinfo.yres * vinfo.bits_per_pixel /8;
-    fbp =(char *) mmap (0, screensize, PROT_READ | PROT_WRITE,MAP_SHARED, fp,0);
+    fbp =(char *) mmap (0, finfo.smem_len, PROT_READ | PROT_WRITE,MAP_SHARED, fp,0);
     if ((int) fbp == -1)
     {
         printf ("Error: failed to map framebuffer device tomemory./n");
@@ -468,15 +468,17 @@ int main (int argc, char *argv[])
 
     if (NULL != strstr(argv[1], "/dev/fb") ){ // save screen into image
         storeImage(&vinfo,bmpname,fbp);
-    } else if (0 == strcmp("0", argv[1])) { // draw grayscale
+    } else if (0 == strcmp("0", argv[1])) { // clean fb
+        memset(fbp, 0, finfo.smem_len );
+    } else if (0 == strcmp("1", argv[1])) { // draw grayscale
         drawGrayScale(&finfo, &vinfo, fbp);
-    } else if (0 == strcmp("1", argv[1])) { // draw color bar
+    } else if (0 == strcmp("2", argv[1])) { // draw color bar
         drawColorBar(&finfo, &vinfo, fbp);
     } else { // draw image
         renderImage(&vinfo,bmpname,fbp);
     }
 
-    munmap(fbp, screensize);
+    munmap(fbp, finfo.smem_len);
 
     close (fp);
 
