@@ -1,0 +1,83 @@
+#!/system/bin/bash
+
+SDISK='/media/MCR_data'
+
+showhelp() {
+  echo "usage:"
+  echo '    -r request Udisk'
+  echo '    -d release Udisk '
+  echo '    -u begin to upgrade'
+  echo ''
+  echo 'errors:'
+  echo '0     -- success'
+  echo '1     -- args invalid'
+  echo '<0    -- upgrade error'
+}
+
+req_disk() {
+  echo 'request udisk'
+
+  df -T /dev/sdcardb5
+  if [ $? = 0 ] ; then
+    size=$(df -m /dev/sdcardb5 | awk 'NR==2{print $2}')
+    echo "sdcardb5's size is "$size"M"
+
+    if [ $size -gt 1024 ]; then
+      umount /dev/sdcardb5 && mkfs.vfat -n userdata /dev/sdcardb5 1024000
+    else
+      umount /dev/sdcardb5 && /system/bin/fsck.vfat -a /dev/sdcardb5 && sleep 1
+    fi
+  fi
+
+  echo 1 > /sys/devices/virtual/mass_storage_usb/mass0/enable
+
+  exit 0
+}
+
+rel_disk() {
+  echo 'release udisk'
+
+  echo 0 > /sys/devices/virtual/mass_storage_usb/mass0/enable
+  sleep 1
+  mkdir -p $SDISK
+  /system/bin/fsck.vfat -a /dev/sdcardb5
+  mount /dev/sdcardb5 $SDISK
+
+  exit 0
+}
+
+upgrade() {
+  package=$1
+  echo "upgrade $package"
+
+  df -T /dev/sdcardb5 && [ -d $SDISK ] || { echo "error: Not mount sdcardb5"; exit -100; }
+
+  rm -rf "$SDISK/.upgrade"
+  unzip "$package" -od "$SDISK" && rm -f "$package" || { echo "unzip fail!"; exit -101; }
+
+  mv "$SDISK/menuUpdate" "$SDISK/.upgrade"
+  find $SDISK/.upgrade/ | xargs chmod +x
+  $SDISK/.upgrade/update6700.sh "$SDISK/.upgrade"
+}
+
+getarg() {
+  while getopts rdu: name
+  do
+    case $name in
+      r) req_disk ;;
+      d) rel_disk ;;
+      u) upgrade $OPTARG ;;
+      *)
+        echo 'invalid para'
+        exit -1
+        ;;
+    esac
+  done
+}
+
+if [ $# -lt 1 ] ; then
+   showhelp
+   exit 1
+else
+  getarg $*
+fi
