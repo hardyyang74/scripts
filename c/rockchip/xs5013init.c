@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
-
+#include <ctype.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -13,6 +13,19 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <sys/stat.h>
+
+/* cvi 720P60 pattern
+xs5013 "mem w 0x11003400 0x0"
+xs5013 "mem w 0x11000060 0x0011"
+xs5013 "mem w 0x11000060 0x1003"
+xs5013 "mem w 0x11001010 0x0"
+xs5013 "mem w 0x11001010 0xffffffff"
+xs5013 "mem w 0x11048080 0x03"
+xs5013 "mem w 0x11008188 0xff"
+xs5013 "mem w 0x11008188 0x0"
+xs5013 "mem w 0x1104805c 0x1"
+xs5013 "mem w 0x11003400 0x1"
+*/
 
 #define TTY_NAME "/dev/ttyS3"
 #define BAUDRATE B115200
@@ -67,57 +80,25 @@ static NoDataCmd NoDataCmdPkg = {
     .etx = PKG_TAIL
 };
 
-// hexdump -v -e '4/1 "0x%02x, " "\n"' miniboot_reload_dh5021a.img > imgData
-char imgData[] = {
-#include "imgData"
+// hexdump -v -e '4/1 "0x%02x, " "\n"' miniboot_reload_xs5013_ahd.img > ahdData
+static const char ahdData[] = {
+#include "ahdData"
 };
 
-#if 0
-int readDataTty(int fd, char *rcv_buf, int TimeOut, int Len)
-{
-    int retval;
-    fd_set rfds;
-    struct timeval tv;
-    int ret, pos;
-    tv.tv_sec = TimeOut / 1000;  //set the rcv wait time
-    tv.tv_usec = TimeOut % 1000 * 1000;  //100000us = 0.1s
+// hexdump -v -e '4/1 "0x%02x, " "\n"' miniboot_reload_xs5013_cvi.img > cviData
+static const char cviData[] = {
+#include "cviData"
+};
 
-    pos = 0;
-    while (1) {
-        FD_ZERO(&rfds);
-        FD_SET(fd, &rfds);
-        retval = select(fd + 1, &rfds, NULL, NULL, &tv);
-        if (retval == -1)
-        {
-            perror("select()");
-            break;
-        }
-        else if (retval)
-        {
-            ret = read(fd, rcv_buf + pos, 1);
-            if (-1 == ret)
-            {
-                perror("read()");
-                break;
-            }
-            printf("[hardy] %c\n", *(rcv_buf + pos));
+// hexdump -v -e '4/1 "0x%02x, " "\n"' miniboot_reload_xs5013_tvi.img > tviData
+static const char tviData[] = {
+#include "tviData"
+};
 
-            pos++;
-            if (Len <= pos)
-            {
-                break;
-            }
-        }
-        else
-        {
-            printf("[hardy: %s\n", strerror(errno));
-            break;
-        }
-    }
+static const char patternData[] = {
+#include "patternData"
+};
 
-    return pos;
-}
-#endif
 
 static inline int bytes2int(char *buf)
 {
@@ -169,18 +150,20 @@ int setOpt(int fd) {
 
 int readbytes(int fd, char *rcv_buf, int Len)
 {
-    int ret=0, pos;
+    int ret=0, pos, time=0;
     fd_set rfds;
     struct timeval tv;
 
     pos = 0;
-    while (pos < Len) {
+    while (pos < Len && time <3*Len) {
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
-        tv.tv_sec = 1;  //set the rcv wait time
-        tv.tv_usec = 0;  //100000us = 0.1s
+        tv.tv_sec = 0;  //set the rcv wait time
+        tv.tv_usec = 100*1000;  //100000us = 0.1s
 
         ret = select(fd + 1, &rfds, NULL, NULL, &tv);
+
+        time ++;
 
         if (ret == -1){
             perror("select()");
@@ -196,29 +179,32 @@ int readbytes(int fd, char *rcv_buf, int Len)
         }
     }
 
-    return 0;
+    return pos;
 }
 
 int readPckHead(int fd, char *rcv_buf)
 {
-    int ret, trytimes=20;
+    int ret, trytimes=3;
 
     memset(rcv_buf, 0, HEADLEN);
     while (trytimes > 0) {
+        trytimes--;
         if (PKG_HEAD != rcv_buf[STX]) {
             ret = readbytes(fd, rcv_buf, 1);
+            if (ret < 0) continue;
         }
 
         if (PKG_HEAD == rcv_buf[STX]) {
             // read package head
             ret = readbytes(fd, &rcv_buf[CMD], HEADLEN-1);
+            if (ret < 0) continue;
             if (PKG_TAIL == rcv_buf[ETX]) {
                 break;
             }
         }
     }
 
-    printf("recv package head [0x%02x%02x%02x%02x]\n", rcv_buf[STX], rcv_buf[CMD], rcv_buf[CHKSUM], rcv_buf[ETX]);
+    //printf("recv package head [0x%02x%02x%02x%02x]\n", rcv_buf[STX], rcv_buf[CMD], rcv_buf[CHKSUM], rcv_buf[ETX]);
 
     return (PKG_HEAD != rcv_buf[STX] || PKG_TAIL != rcv_buf[ETX]);
 }
@@ -241,20 +227,35 @@ static inline int sendNoDataCmd(int fd, char cmd)
     NoDataCmdPkg.cmd = cmd;
     sendDataTty(fd, (char*)&NoDataCmdPkg, sizeof(NoDataCmdPkg));
 
-    printf("send [0x%02x%02x%02x%02x\n", NoDataCmdPkg.stx, NoDataCmdPkg.cmd, NoDataCmdPkg.chksum, NoDataCmdPkg.etx);
+    printf("send [0x%02x%02x%02x%02x]\n", NoDataCmdPkg.stx, NoDataCmdPkg.cmd, NoDataCmdPkg.chksum, NoDataCmdPkg.etx);
 }
 
-int exeCmdDLoad(int fd)
+int exeCmdDLoad(int fd, const char *mode)
 {
-    #define DATA_NUM (0x40)
+    #define DATA_NUM (0x200)
     char snd_buf[HEADLEN+XS_ADDRESS_LEN+XS_COUNT_LEN+DATA_NUM*XS_PERDATA_LEN] =
         {PKG_HEAD, BM_CMD_DLOAD, 0, PKG_TAIL};
 
     int sentlen = 0; //
     int sendlen = 0; // data lenght will be sent
-    int datasize = sizeof(imgData);
+    const char* imgData = NULL;
+    int datasize = 0;;
     int i, tryTimes, allDataLen;
     char rcv_buf[HEADLEN] = {0};
+
+    if (0 == strcmp(mode, "cvi")) {
+        imgData = cviData;
+        datasize = sizeof(cviData);
+    } else if (0 == strcmp(mode, "tvi")) {
+        imgData = tviData;
+        datasize = sizeof(tviData);
+    } else if (0 == strcmp(mode, "ahd")) {
+        imgData = ahdData;
+        datasize = sizeof(ahdData);
+    } else {
+        imgData = patternData;
+        datasize = sizeof(patternData);
+    }
 
     while (sentlen < datasize) {
         if (DATA_NUM*XS_PERDATA_LEN < (datasize-sentlen)) {
@@ -262,7 +263,7 @@ int exeCmdDLoad(int fd)
         } else {
             sendlen = datasize-sentlen;
         }
-        printf("will send len:0x%x\n", sendlen);
+        //printf("will send len:0x%x\n", sendlen);
 
         // address
         int2bytes(IMG_ADDRESS+sentlen, snd_buf+HEADLEN);
@@ -281,10 +282,10 @@ int exeCmdDLoad(int fd)
         }
 
         //printf("send [0x%02x%02x%02x%02x 0x%02x%02x%02x%02x 0x%02x%02x%02x%02x 0x%02x%02x%02x%02x\n",
-        printf("send [0x%02x%02x%02x%02x 0x%02x%02x%02x%02x 0x%02x%02x%02x%02x\n",
-            snd_buf[0], snd_buf[1], snd_buf[2], snd_buf[3], // head
-            snd_buf[4], snd_buf[5], snd_buf[6], snd_buf[7], // address
-            snd_buf[8], snd_buf[9], snd_buf[10], snd_buf[11]); // count
+//        printf("send [0x%02x%02x%02x%02x 0x%02x%02x%02x%02x 0x%02x%02x%02x%02x\n",
+  //          snd_buf[0], snd_buf[1], snd_buf[2], snd_buf[3], // head
+    //        snd_buf[4], snd_buf[5], snd_buf[6], snd_buf[7], // address
+      //      snd_buf[8], snd_buf[9], snd_buf[10], snd_buf[11]); // count
             //snd_buf[12], snd_buf[13], snd_buf[14], snd_buf[15]); // data
 
         tryTimes = 3;
@@ -327,7 +328,7 @@ static int sendRunCmd(int fd)
         //printf("chksum:0x%02x data:0x%02x\n", snd_buf[CHKSUM], snd_buf[i]);
     }
 
-    printf("send [0x%02x%02x%02x%02x 0x%02x%02x%02x%02x\n",
+    printf("send [0x%02x%02x%02x%02x 0x%02x%02x%02x%02x]\n",
         snd_buf[0], snd_buf[1], snd_buf[2], snd_buf[3], // head
         snd_buf[4], snd_buf[5], snd_buf[6], snd_buf[7]); // address
 
@@ -353,41 +354,55 @@ static int sendRunCmd(int fd)
     return XS_SUCCESS;
 }
 
-void initXs5013(int fd)
+int initXs5013(int fd, const char *mode)
 {
     int ret;
     char rcv_buf[HEADLEN];
 
     while (1) {
         if (XS_SUCCESS == readPckHead(fd, rcv_buf) ) {
+    printf("recv package head [0x%02x%02x%02x%02x]\n", rcv_buf[STX], rcv_buf[CMD], rcv_buf[CHKSUM], rcv_buf[ETX]);
             if (BM_CMD_NOTIFY != rcv_buf[CMD]) {
                 printf("incorrect command %d\n", rcv_buf[CMD]);
             } else {
                 sendNoDataCmd(fd, BM_CMD_DEBUG);
                 usleep(100*1000);
-                exeCmdDLoad(fd);
+                exeCmdDLoad(fd, mode);
                 sendRunCmd(fd);
                 //printf("xs5013 is ready\n");
                 break;
             }
+        } else {
+            return -1;
         }
     }
+
+    return 0;
 }
 
 int main(int argc, char** argv) {
     char *format = NULL;
     int fd = 0;
     char buf[100] = {0};
+    int tryTimes;
+    char c;
 
     if (argc < 2) {
-        printf("invalid parameter\n");
-        printf("  para1: command\n");
-        printf("    init -- download img\n");
-        printf("    ahd720p60 -- switch video format\n");
-        printf("    hdcvi720p60 -- switch video format\n");
-        printf("    tvi720p60 -- switch video format\n\n");
-        printf("  ex: xs5013 init\n");
-        return 0;
+        printf("    no parameter -- read serial\n");
+        printf("    para1: command\n");
+        printf("    ahd/cvi/tvi/pattern -- download img\n");
+        printf("    720p25 -- switch video format\n");
+        printf("    720p30 -- switch video format\n");
+        printf("    720p50 -- switch video format\n");
+        printf("    720p60 -- switch video format\n");
+        printf("    1080p25 -- switch video format\n");
+        printf("    1080p30 -- switch video format\n");
+        printf("    1080p50 -- switch video format, only for cvi\n");
+        printf("    1080p60 -- switch video format, only for cvi\n");
+        printf("    720pal -- switch video format, 720x576-50\n");
+        printf("    720n -- switch video format, 720x480-60\n\n");
+        printf("    ex: xs5013 ahd\n\n");
+        //return 0;
     }
 
     fd = open(TTY_NAME, O_RDWR | O_NOCTTY | O_NDELAY);
@@ -398,27 +413,45 @@ int main(int argc, char** argv) {
 
     setOpt(fd);
 
-//    sprintf(buf, "imgLen:%d\n", sizeof(imgData));
-//    sendDataTty(fd, buf, strlen(buf));
+    if (argc >= 2 ) {
+        if (0 == strcmp("ahd", argv[1])
+            ||0 == strcmp("cvi", argv[1])
+            || 0 == strcmp("tvi", argv[1])
+            || 0 == strcmp("pattern", argv[1]) ) {
+            int ret = initXs5013(fd, argv[1]);
 
-    if (0 == strcmp("init", argv[1])) {
-        initXs5013(fd);
-        if (argc >= 3) {
-            printf("switch %s\n", argv[2]);
-            sendDataTty(fd, argv[2], strlen(argv[2]));
+            if (argc == 2) {
+                if (0 != ret) return -1;
+            } else {
+                printf("init %s\n", argv[2]);
+                sprintf(buf, "%s\r", argv[2]);
+                sendDataTty(fd, buf, strlen(buf));
+                printf("init %s end\n", argv[2]);
+            }
+        } else {
+            printf("switch %s\n", argv[1]);
+
+            sprintf(buf, "%s\r", argv[1]);
+            sendDataTty(fd, buf, strlen(buf));
         }
-    } else {
-        printf("switch %s\n", argv[1]);
-        sendDataTty(fd, argv[1], strlen(argv[1]));
     }
 
-    while (1) {
-        char c;
-        readbytes(fd, &c, 1);
-        printf("%c", c);
-        sleep(1);
+    tryTimes = 256;
+    while (tryTimes--) {
+        if (1 == readbytes(fd, &c, 1)) {
+            if (isprint(c) || iscntrl(c)) {
+                printf("%c", c);
+            } else {
+                printf("0x%02x\n", c);
+            }
+        } else {
+            break;
+        }
+        if ('#' == c) {
+            printf("\n");
+            break;
+        }
     }
-
     close (fd);
 
     return 0;
