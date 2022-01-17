@@ -1,4 +1,5 @@
 #define _FILE_OFFSET_BITS 64
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,8 +12,15 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_mode.h>
 
-#define SHOW_PICTURE "/tmp/drmshowme"
+#if SYSWRAPPER
+#include "syswrapper.h"
+#endif
+
 #define plog //printf
+#define SHOW_PICTURE "/tmp/drmshowme"
+#define BMP_W 1280
+#define BMP_H 720
+
 //14byte
 typedef struct
 {
@@ -69,6 +77,15 @@ typedef struct
 #define RGB565_MASK_GREEN                         0x07E0
 #define RGB565_MASK_BLUE                         0x001F
 
+struct buffer_object {
+    uint32_t width, height, size;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint32_t handle;
+    uint32_t fb_id;
+    uint8_t *fb;
+};
+
 void rgb565_2_rgb24(char *rgb24, short rgb565)
 {
     /*
@@ -108,9 +125,8 @@ unsigned short rgb_24_2_565(const unsigned char *rgb24)
     return (unsigned short)(((b >> 3) << 11) |((g >> 2) << 5) |(r >> 3));
 }
 
-drmModeConnector* FindConnector(int fd)
+drmModeConnector* FindConnector(int fd, drmModeRes *resources)
 {
-    drmModeRes *resources = drmModeGetResources(fd); // drmModeRes描述了计算机所有的显卡信息：connector，encoder，crtc，modes等。
     if (!resources)
     {
         return NULL;
@@ -143,48 +159,62 @@ drmModeConnector* FindConnector(int fd)
         }
     }
 
-    drmModeFreeResources(resources);
     return conn;
 }
 
-
-//查找与Connector匹配的Crtc
-int FindCrtcId(int fd, drmModeConnector *conn)
+static drmModeCrtcPtr drmFoundCrtc(int fd, drmModeResPtr res,
+            drmModeConnector * conn, int *crtc_index)
 {
-    drmModeEncoder *encoder = NULL;
-    drmModeRes *resources = drmModeGetResources(fd);
-    int crtc_id = 0;
-    int i = 0;
+  int i;
+  int crtc_id;
+  drmModeEncoder *enc;
+  drmModeCrtc *crtc;
+  uint32_t crtcs_for_connector = 0;
 
-    if (!resources)
-    {
-        fprintf(stderr, "drmModeGetResources failed\n");
-        return -1;
+  crtc_id = -1;
+  for (i = 0; i < res->count_encoders; i++) {
+    enc = drmModeGetEncoder (fd, res->encoders[i]);
+    if (enc) {
+      if (enc->encoder_id == conn->encoder_id) {
+        crtc_id = enc->crtc_id;
+        drmModeFreeEncoder (enc);
+        break;
+      }
+      drmModeFreeEncoder (enc);
+    }
+  }
+
+  /* If no active crtc was found, pick the first possible crtc */
+  if (crtc_id == -1) {
+    for (i = 0; i < conn->count_encoders; i++) {
+      enc = drmModeGetEncoder (fd, conn->encoders[i]);
+      crtcs_for_connector |= enc->possible_crtcs;
+      drmModeFreeEncoder (enc);
     }
 
-    for (i = 0; i < resources->count_encoders; i++) {
-        encoder = drmModeGetEncoder(fd, resources->encoders[i]);
-        if (!encoder) {
-            continue;
-        }
+    if (crtcs_for_connector != 0)
+      crtc_id = res->crtcs[ffs (crtcs_for_connector) - 1];
+  }
 
-        if(encoder->encoder_id == conn->encoder_id) {
-            plog("[hardy] encoder:%d %d %d %d %d\n",
-                encoder->encoder_id, encoder->encoder_type, encoder->crtc_id,
-                encoder->possible_crtcs, encoder->possible_clones);
-            break;
-        }
+  if (crtc_id == -1)
+    return NULL;
+
+  for (i = 0; i < res->count_crtcs; i++) {
+    crtc = drmModeGetCrtc (fd, res->crtcs[i]);
+    if (crtc) {
+      if (crtc_id == crtc->crtc_id) {
+        if (crtc_index)
+          *crtc_index= i;
+        return crtc;
+      }
+      drmModeFreeCrtc (crtc);
     }
+  }
 
-    if (encoder) drmModeFreeEncoder(encoder);
-
-    crtc_id = encoder->crtc_id;
-    drmModeFreeResources(resources);
-
-    return crtc_id;
+  return NULL;
 }
 
-drmModeCrtc *FindCrtc(int fd, int crtcid)
+drmModeCrtcPtr FindCrtc(int fd, int crtcid)
 {
     drmModeCrtcPtr pCrtc = NULL;
     drmModeRes *resources = drmModeGetResources(fd);
@@ -220,6 +250,276 @@ drmModeCrtc *FindCrtc(int fd, int crtcid)
     drmModeFreeResources(resources);
 
     return pCrtc;
+}
+
+static uint32_t get_property_id(int fd, drmModeObjectPropertiesPtr props, const char *name)
+{
+    drmModePropertyPtr prop = NULL;
+    uint32_t j, id = 0;
+
+    for (uint32_t j = 0; j < props->count_props; j++) {
+        prop = drmModeGetProperty(fd, props->props[j]);
+        if (prop) {
+            if (!strcmp(prop->name, name)) {
+                id = prop->prop_id;
+                plog("[hardy] name:%s id:%d\n", prop->name, prop->prop_id);
+            }
+            drmModeFreeProperty(prop);
+        }
+
+        if (id) break;
+    }
+
+    return id;
+}
+
+void adjsutZpos(int fd, uint32_t planeid, int zpos)
+{
+    drmModeObjectPropertiesPtr props;
+
+    props = drmModeObjectGetProperties(fd, planeid, DRM_MODE_OBJECT_PLANE);
+
+    uint32_t property_zpos = get_property_id(fd, props, "zpos");
+    if (property_zpos) {
+        drmModeAtomicReq *req;
+
+        req = drmModeAtomicAlloc();
+        drmModeAtomicAddProperty(req, planeid, property_zpos, zpos);
+        drmModeAtomicCommit(fd, req, 0, NULL);
+        drmModeAtomicFree(req);
+    }
+
+    drmModeFreeObjectProperties(props);
+}
+
+void print_plane(int fd, drmModePlanePtr p)
+{
+    drmModeObjectPropertiesPtr props = NULL;
+    drmModePropertyPtr prop = NULL;
+
+    props = drmModeObjectGetProperties(fd, p->plane_id,DRM_MODE_OBJECT_PLANE);
+    if (!props) {
+        plog("[hardy] get DRM_MODE_OBJECT_PLANE fail\n");
+        return;
+    }
+
+    plog("[hardy] plane id:%d", p->plane_id);
+    for (uint32_t j = 0; j < props->count_props; j++) {
+        prop = drmModeGetProperty(fd, props->props[j]);
+        if (prop) {
+            if (!strcmp(prop->name, "NAME")) {
+                plog(" %s:%s", prop->name, prop->enums[0].name);
+            } else {
+                plog(" name:%s", prop->name);
+            }
+            drmModeFreeProperty(prop);
+        }
+    }
+    plog("\n");
+}
+
+drmModePlanePtr FindPlaneByName(int fd, const char *name)
+{
+    int i, j;
+    drmModePlanePtr plane = NULL;
+    drmModePlaneResPtr pr = drmModeGetPlaneResources(fd);
+    drmModeObjectPropertiesPtr props;
+    drmModePropertyPtr prop;
+    uint32_t found_plane = 0;
+
+    if (!pr) {
+        printf("drmModeGetPlaneResources faild!\n");
+        return NULL;
+    }
+
+    for (i=0; i<pr->count_planes; i++) {
+        plane = drmModeGetPlane(fd, pr->planes[i]);
+        if (!plane) {
+            continue;
+        }
+
+        plog("[hardy] plane id:%d crtc_id:%d fb_id=%d possible_crtcs:%d\n",
+            plane->plane_id, plane->crtc_id, plane->fb_id, plane->possible_crtcs);
+
+        //if (plane->crtc_id == crtcid) break;
+
+        props = drmModeObjectGetProperties(fd, plane->plane_id,DRM_MODE_OBJECT_PLANE);
+        if (!props) {
+            printf("failed to found props plane[%d] %s\n",
+                   plane->plane_id, strerror(errno));
+            drmModeFreePlane(plane);
+            plane = NULL;
+            continue;
+        }
+
+        for (j = 0; j < props->count_props; j++) {
+            prop = drmModeGetProperty(fd, props->props[j]);
+            if (!strcmp(prop->name, "NAME")) {
+                plog(" %s:%s acquire name:%s\n", prop->name, prop->enums[0].name, name);
+            }
+            plog(" %s\n", prop->name);
+            if (!strcmp(prop->name, "NAME")
+                && !strcmp(name, prop->enums[0].name)) {
+                drmModeFreeProperty(prop);
+                found_plane = 1;
+                break;
+            }
+            drmModeFreeProperty(prop);
+        }
+
+        drmModeFreeObjectProperties(props);
+        if (found_plane) break;
+        drmModeFreePlane(plane);
+        plane = NULL;
+    }
+
+    if (pr) drmModeFreePlaneResources(pr);
+
+    return plane;
+}
+
+drmModePlanePtr FindPlaneByCrtc(int fd, uint32_t crtcid)
+{
+    int i, j;
+    drmModePlanePtr plane = NULL;
+    drmModePlaneResPtr pr = drmModeGetPlaneResources(fd);
+    drmModeObjectPropertiesPtr props;
+    drmModePropertyPtr prop;
+    uint32_t found_plane = 0;
+
+    if (!pr) {
+        printf("drmModeGetPlaneResources faild!\n");
+        return NULL;
+    }
+
+    for (i=0; i<pr->count_planes; i++) {
+        plane = drmModeGetPlane(fd, pr->planes[i]);
+        if (!plane) {
+            continue;
+        }
+
+        plog("[hardy] plane id:%d crtc_id:%d fb_id=%d possible_crtcs:%d\n",
+            plane->plane_id, plane->crtc_id, plane->fb_id, plane->possible_crtcs);
+
+        if (plane->crtc_id == crtcid) break;
+
+        drmModeFreePlane(plane);
+        plane = NULL;
+    }
+
+    if (pr) drmModeFreePlaneResources(pr);
+
+    return plane;
+}
+
+static int create_fb(int fd, struct buffer_object *bo)
+{
+    int ret;
+    struct drm_mode_create_dumb creq;
+
+    memset(&creq, 0, sizeof(creq));
+
+    creq.width = bo->width;
+    creq.height = bo->height;
+    creq.bpp = 32;
+    creq.flags = 0;
+
+    ret = drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
+    if (ret)
+    {
+        printf("create dumb failed!\n");
+        return -1;
+    }
+
+    bo->pitch = creq.pitch;
+    bo->bpp = creq.bpp;
+    bo->size = creq.size;
+    bo->handle = creq.handle;
+
+    //使用缓存的handel创建一个FB，返回fb的id：framebuffer。
+#if 0
+    ret = drmModeAddFB(fd, bo->width, bo->height, 24, 32, creq.pitch, creq.handle, &bo->fb_id);
+#else
+    unsigned int handles[4], pitches[4], offsets[4];
+    handles[0] = creq.handle;
+    pitches[0] = creq.pitch;
+    offsets[0] = 0;
+    ret = drmModeAddFB2(fd, bo->width, bo->height, DRM_FORMAT_ARGB8888, handles, pitches, offsets,
+            &bo->fb_id, 0);
+#endif
+    if (ret)
+    {
+        printf("failed to create fb\n");
+        return -1;
+    }
+
+    plog("create_fb bufid:%d size:%d bpp:%d\n", bo->fb_id, bo->size, bo->bpp);
+
+    struct drm_mode_map_dumb mreq; //请求映射缓存到内存。
+    mreq.handle = creq.handle;
+
+    ret = drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
+    if (ret)
+    {
+        printf("map dumb failed!\n");
+        return -1;
+    }
+
+    // 猜测：创建的缓存位于显存上，在使用之前先使用drm_mode_map_dumb将其映射到内存空间。
+    // 但是映射后缓存位于内核内存空间，还需要一次mmap才能被程序使用。
+    //unsigned char* buf = mmap(0, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
+    bo->fb = mmap(0, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
+    if (bo->fb == MAP_FAILED)
+    {
+        printf("mmap failed!\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int fbid2buf(int fd, struct buffer_object *bo)
+{
+    int ret = 0;
+
+    drmModeFBPtr drmfb = drmModeGetFB(fd, bo->fb_id);
+
+    if (NULL == drmfb) {
+        printf("drmModeGetFB failed!\n");
+        return -1;
+    }
+
+    struct drm_mode_map_dumb mreq; //请求映射缓存到内存。
+    mreq.handle = drmfb->handle;
+
+    ret = drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
+    if (ret)
+    {
+        printf("map dumb failed!\n");
+        return -1;
+    }
+
+    bo->width = drmfb->width;
+    bo->height = drmfb->height;
+    bo->pitch = drmfb->pitch;
+    bo->bpp = drmfb->bpp;
+    bo->handle = drmfb->handle;
+    bo->size = drmfb->width*drmfb->height;
+    bo->fb = mmap(0, drmfb->pitch*drmfb->height,
+        PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
+
+    drmModeFreeFB(drmfb);
+
+    return 0;
+}
+
+static void destroy_fb(int fd, struct buffer_object *bo)
+{
+    struct drm_mode_destroy_dumb destroy = {bo->handle};
+
+    drmModeRmFB(fd, bo->fb_id);
+    munmap(bo->fb, bo->size);
+    drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
 }
 
 //绘制一张全色的图
@@ -286,8 +586,8 @@ int drawBmp(const char *bmp, unsigned char *dest, int stride, int drmw, int drmh
      ret = fread(&fhead, 1, sizeof(BITMAPFILEHEADER), fin);
      ret = fread(&bminfo, 1, sizeof(BITMAPINFOHEADER), fin);
 
-    plog("Image info: size %d*%d, bpp %d, compression %d, offset %d\n",
-        bminfo.ciWidth, bminfo.ciHeight, bminfo.ciBitCount, bminfo.ciCompress, fhead.cfoffBits);
+    //plog("Image info: size %d*%d, bpp %d, compression %d, offset %d\n",
+        //bminfo.ciWidth, bminfo.ciHeight, bminfo.ciBitCount, bminfo.ciCompress, fhead.cfoffBits);
     if(bminfo.ciBitCount!=24 && bminfo.ciBitCount!=16)
     {
         printf("not supported bmp file\n");
@@ -371,8 +671,9 @@ int drawBmp(const char *bmp, unsigned char *dest, int stride, int drmw, int drmh
     return 0;
 }
 
-void storeImage(unsigned char* buf, drmModeFBPtr drmfb, char *name)
+void storeImage(struct buffer_object *bo, char *name)
 {
+    unsigned char* buf = bo->fb;
     FILE *fin = (FILE*)fopen(name, "w");
     BITMAPFILEHEADER fhead;
     BITMAPINFOHEADER bminfo;
@@ -392,32 +693,35 @@ void storeImage(unsigned char* buf, drmModeFBPtr drmfb, char *name)
     memset((void*)&fhead, 0 , sizeof(BITMAPFILEHEADER));
     memset((void*)&bminfo, 0 , sizeof(BITMAPINFOHEADER));
 
-    plog("drmfb:[%d %d] bpp:%d\n", drmfb->width, drmfb->height, drmfb->bpp);
+    plog("drmfb:[%d %d] bpp:%d\n", bo->width, bo->height, bo->bpp);
 
     fhead.cfType[0] = 'B', fhead.cfType[1] = 'M';
     bminfo.ciSize = sizeof(BITMAPINFOHEADER);
-    bminfo.ciWidth = drmfb->width;
-    bminfo.ciHeight = drmfb->height;
+    bminfo.ciWidth = bo->width;
+    bminfo.ciHeight = bo->height;
     bminfo.ciPlanes = 1;
 
     // write image data
     ptr8 = (unsigned char*) buf;
-    switch(drmfb->bpp)
+    switch(bo->bpp)
     {
     case 32:
         bminfo.ciBitCount = 24;
-        bminfo.ciSizeImage = drmfb->width * drmfb->height * 3;
+        bminfo.ciSizeImage = bo->width * bo->height * 3;
 
         bminfo.ciCompress = 0;
         fhead.cfoffBits = sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER);
-        fhead.cfSize = fhead.cfoffBits + drmfb->width * drmfb->height * 3;
+        fhead.cfSize = fhead.cfoffBits + bo->width * bo->height * 3;
         fseek(fin, fhead.cfoffBits, SEEK_SET);
 
-        for (y=0; y<drmfb->height; y++)
+        for (y=0; y<bo->height; y++)
         {
-            for(x=0; x<drmfb->width; x++)
+            for(x=0; x<bo->width; x++)
             {
-                fwrite(ptr8 + ((drmfb->height-y-1)* drmfb->width + x)*4, 1, 3, fin);
+                //fwrite(ptr8 + ((drmfb->height-y-1)* drmfb->width + x)*4, 1, 3, fin);
+                fwrite(ptr8 + ((bo->height-y-1)* bo->width + x)*4+2, 1, 1, fin);
+                fwrite(ptr8 + ((bo->height-y-1)* bo->width + x)*4+1, 1, 1, fin);
+                fwrite(ptr8 + ((bo->height-y-1)* bo->width + x)*4+0, 1, 1, fin);
             }
         }
         break;
@@ -431,7 +735,7 @@ void storeImage(unsigned char* buf, drmModeFBPtr drmfb, char *name)
         bminfo.ciCompress = 3; //BI_BITFIELDS;//λ���ŷ�ʽ�����ݵ�ɫ������֪��RGBռbit��
         fhead.cfoffBits = sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER) + sizeof(rgb_quad);
 
-        bminfo.ciSizeImage = drmfb->width * drmfb->height * 2;
+        bminfo.ciSizeImage = bo->width * bo->height * 2;
         fhead.cfSize = fhead.cfoffBits + bminfo.ciSizeImage;
 
         //RGB565��ʽ����
@@ -442,9 +746,9 @@ void storeImage(unsigned char* buf, drmModeFBPtr drmfb, char *name)
         fwrite(&rgb_quad, 1, sizeof(rgb_quad), fin);
 
         fseek(fin, fhead.cfoffBits, SEEK_SET);
-        for (y=0; y<drmfb->height; y++)
+        for (y=0; y<bo->height; y++)
         {
-            fwrite(ptr8 + (drmfb->height-y-1)* drmfb->width*2, 2, drmfb->width, fin);
+            fwrite(ptr8 + (bo->height-y-1)* bo->width*2, 2, bo->width, fin);
         }
 #else
         // save 24 bpp
@@ -487,6 +791,7 @@ int main(int argc, char *argv[])
     char bmpfile[256] = {0};
     char tmp[256] = {0};
     FILE *fp = NULL;
+    drmModeRes *resources = NULL;
 
     int len;
 
@@ -500,7 +805,8 @@ int main(int argc, char *argv[])
         printf("[hardy] picture:%s\n", bmpfile);
     }
 
-    fd = open("/dev/dri/card0", O_RDWR);
+    //fd = open("/dev/dri/card0", O_RDWR);
+    fd = drmOpen("rockchip", NULL);
     if (fd < 0)
     {
         /* Probably permissions error */
@@ -508,102 +814,84 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+    resources = drmModeGetResources(fd);
+    if (!resources)
+    {
+        fprintf(stderr, "get res fail\n");
+        drmClose(fd);
+        return -2;
+    }
+
     drmSetMaster(fd);
+    drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+    drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1);
 
-    drmModeConnectorPtr connector = FindConnector(fd);
+    drmModeConnectorPtr connector = FindConnector(fd, resources);
+    drmModeCrtc *crtc = drmFoundCrtc(fd, resources, connector, NULL);
+    int crtcid = crtc->crtc_id;
 
-    int crtcid = 0;
-    crtcid = FindCrtcId(fd, connector);
+    plog("hardy: connid:%d type:%d typeid:%d encodeid:%d crtcid:%d buf_id:%d\n",
+        connector->connector_id, connector->connector_type, connector->connector_type_id, connector->encoder_id, crtcid, crtc->buffer_id);
 
-    drmModeCrtc *crtc = FindCrtc(fd, crtcid);
+    struct buffer_object bo = {};
 
     if(access(bmpfile, F_OK) != 0) {
-        drmModeFBPtr drmfb = drmModeGetFB(fd, crtc->buffer_id);
-
-        struct drm_mode_map_dumb mreq; //请求映射缓存到内存。
-        mreq.handle = drmfb->handle;
-
-        ret = drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
-        if (ret)
-        {
-            printf("map dumb failed!\n");
-            return -1;
-        }
-
-        unsigned char* buf = mmap(0, drmfb->pitch*drmfb->height,
-            PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
-        if (buf == MAP_FAILED)
-        {
-            printf("mmap failed!\n");
-            return -1;
-        }
-
-        storeImage(buf, drmfb, bmpfile);
-        drmModeFreeFB(drmfb);
+        bo.fb_id = crtc->buffer_id;
+        fbid2buf(fd, &bo);
+        plog("connector:%d crtcid:%d bufid:%d\n", connector->connector_id, crtcid, crtc->buffer_id);
+        storeImage(&bo, bmpfile);
         goto exit;
     }
 
-    int width = connector->modes[0].hdisplay;
-    int height = connector->modes[0].vdisplay;
+    memset(&bo, 0, sizeof(struct buffer_object));
+    bo.width = BMP_W; // size of image
+    bo.height = BMP_H;
+    if (connector->modes[0].hdisplay > BMP_W )
+        bo.width =connector->modes[0].hdisplay;
+    if (connector->modes[0].vdisplay > BMP_H)
+        bo.height =connector->modes[0].vdisplay;
+    create_fb(fd, &bo);
 
-    struct drm_mode_create_dumb creq;
-    memset(&creq, 0, sizeof(creq));
-
-    creq.width = width;
-    creq.height = height;
-    creq.bpp = 32;
-    creq.flags = 0;
-
-    ret = drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
-    if (ret)
-    {
-        printf("create dumb failed!\n");
-    }
-
-    uint32_t framebuffer = -1;
-    uint32_t stride = creq.pitch;
-
-    //使用缓存的handel创建一个FB，返回fb的id：framebuffer。
-#if 1
-    ret = drmModeAddFB(fd, width, height, 24, 32, creq.pitch, creq.handle, &framebuffer);
-#else
-    unsigned int handles[4], pitches[4], offsets[4];
-    handles[0] = creq.handle;
-    pitches[0] = creq.pitch;
-    offsets[0] = 0;
-    ret = drmModeAddFB2(fd, width, height, DRM_FORMAT_ARGB8888, handles, pitches, offsets,
-            &framebuffer, 0);
-#endif
-    if (ret)
-    {
-        printf("failed to create fb\n");
-        return -1;
-    }
-
-    drmModeSetCrtc(fd, crtcid, framebuffer, 0, 0,
+    memcpy(&crtc->mode, &connector->modes[0], sizeof(connector->modes[0]));
+    drmModeSetCrtc(fd, crtcid, bo.fb_id, 0, 0,
         &connector->connector_id, 1, &connector->modes[0]);
 
-    struct drm_mode_map_dumb mreq; //请求映射缓存到内存。
-    mreq.handle = creq.handle;
-
-    ret = drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
-    if (ret)
-    {
-        printf("map dumb failed!\n");
-        return -1;
+    // primary plane
+    //drmModePlanePtr plane = FindPlaneByCrtc(fd, crtcid);
+    drmModePlanePtr plane = NULL;
+#if SYSWRAPPER
+    plane = getVideoPlane();
+#else
+    if(access("/usr/bin/weston", F_OK) == 0) {
+        if (DRM_MODE_CONNECTOR_HDMIA == connector->connector_type
+            && 1 == connector->connector_type_id) {
+            plane = FindPlaneByName(fd, "Esmart0-win0");
+        } else {
+            plane = FindPlaneByName(fd, "Smart0-win0");
+        }
+        plog("vp0 plane id:%d\n", plane->plane_id);
+    } else {
+        plane = FindPlaneByName(fd, "Esmart0-win0");
+        plog("vp2 plane id:%d\n", plane->plane_id);
     }
+#endif
 
-    // 猜测：创建的缓存位于显存上，在使用之前先使用drm_mode_map_dumb将其映射到内存空间。
-    // 但是映射后缓存位于内核内存空间，还需要一次mmap才能被程序使用。
-    //unsigned char* buf = mmap(0, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
-    unsigned char* buf = mmap(0, creq.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
-    if (buf == MAP_FAILED)
-    {
-        printf("mmap failed!\n");
-        return -1;
+    int x=0, y=0;
+    if (connector->modes[0].hdisplay > BMP_W) {
+        x = (connector->modes[0].hdisplay - BMP_W) / 2;
     }
+    if (connector->modes[0].vdisplay > BMP_H) {
+        y = (connector->modes[0].vdisplay - BMP_H) / 2;
+    }
+    plog("display dst[%d %d %d %d] src[%d %d %d %d]\n",
+        0, 0, connector->modes[0].hdisplay, connector->modes[0].vdisplay,
+        x, y, BMP_W, BMP_H);
+    drmModeSetPlane(fd, plane->plane_id, crtcid, bo.fb_id, 0,
+        0, 0, connector->modes[0].hdisplay, connector->modes[0].vdisplay,
+        x<<16, y<<16, BMP_W<<16, BMP_H<<16);
+    drmModeFreePlane(plane);
 
-    memset(buf, 0, creq.size);
+    memset(bo.fb, 0, bo.size);
 
 #if 0
     int cc = 0;
@@ -617,11 +905,11 @@ int main(int argc, char *argv[])
     }
 #else
     if(access(bmpfile, F_OK) == 0) {
-        drawBmp(bmpfile, buf, stride, width, height);
+        drawBmp(bmpfile, bo.fb, bo.pitch, bo.width, bo.height);
     }
 
     while (1) {
-//        drmModePageFlip(fd, crtcid, framebuffer, DRM_MODE_PAGE_FLIP_EVENT, 0);
+        //drmModePageFlip(fd, crtcid, bo.fb_id, DRM_MODE_PAGE_FLIP_EVENT, 0);
         usleep(40*1000);
 
         fp = fopen(SHOW_PICTURE,"rb");
@@ -645,19 +933,19 @@ int main(int argc, char *argv[])
         }
 
         if (0 != strcmp(tmp, bmpfile) ) {
-            if (0 == drawBmp(tmp, buf, stride, width, height)) {
+            if (0 == drawBmp(tmp, bo.fb, bo.pitch, bo.width, bo.height)) {
                 strcpy(bmpfile, tmp);
-                //drmModePageFlip(fd, crtcid, framebuffer, DRM_MODE_PAGE_FLIP_EVENT, 0);
             }
         }
     }
 #endif
 
-    munmap(buf, creq.size);
+    destroy_fb(fd, &bo);
 exit:
     if (NULL != crtc) drmModeFreeCrtc(crtc);
     if (NULL != connector) drmModeFreeConnector(connector);
-    close(fd);
+    if (NULL != resources) drmModeFreeResources(resources);
+    drmClose(fd);
     exit(0);
 }
 
