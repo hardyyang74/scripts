@@ -1,4 +1,27 @@
-#!/bin/sh
+#!/bin/bash
+
+while getopts "abc" name; do
+  echo $OPTIND
+
+  case $name in
+    a)
+      echo "para a"
+      ;;
+
+    b)
+      echo "para b"
+      ;;
+    *) echo $name
+      ;;
+  esac
+done
+
+echo $*
+shift $(($OPTIND - 1))
+echo "$OPTIND: $*"
+echo "$1"
+
+exit 0
 
 testreturn() {
   echo "test 1"
