@@ -95,6 +95,7 @@ static const char tviData[] = {
 #include "tviData"
 };
 
+// hexdump -v -e '4/1 "0x%02x, " "\n"' pattern.img > patternData
 static const char patternData[] = {
 #include "patternData"
 };
@@ -184,7 +185,7 @@ int readbytes(int fd, char *rcv_buf, int Len)
 
 int readPckHead(int fd, char *rcv_buf)
 {
-    int ret, trytimes=3;
+    int ret, trytimes=12;
 
     memset(rcv_buf, 0, HEADLEN);
     while (trytimes > 0) {
@@ -301,6 +302,7 @@ int exeCmdDLoad(int fd, const char *mode)
                 sentlen += sendlen;
                 break;
             } else if (BM_CMD_ERR == rcv_buf[CMD]) {
+                printf("send img error!");
                 break;
             } else {
                 tryTimes--;
@@ -402,7 +404,7 @@ int main(int argc, char** argv) {
         printf("    720pal -- switch video format, 720x576-50\n");
         printf("    720n -- switch video format, 720x480-60\n\n");
         printf("    ex: xs5013 ahd\n\n");
-        //return 0;
+        return 0;
     }
 
     fd = open(TTY_NAME, O_RDWR | O_NOCTTY | O_NDELAY);
@@ -436,19 +438,19 @@ int main(int argc, char** argv) {
         }
     }
 
-    tryTimes = 256;
+    tryTimes = 1024;
     while (tryTimes--) {
         if (1 == readbytes(fd, &c, 1)) {
             if (isprint(c) || iscntrl(c)) {
-                printf("%c", c);
+                putchar(c);
             } else {
                 printf("0x%02x\n", c);
             }
         } else {
             break;
         }
-        if ('#' == c) {
-            printf("\n");
+        if ('#' == c || '$' == c) {
+            putchar('\n');
             break;
         }
     }
