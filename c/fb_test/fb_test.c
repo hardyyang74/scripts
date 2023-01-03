@@ -324,52 +324,53 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
     unsigned char red,green,blue;
     long location = 0;
 
-	switch (vinfo->bits_per_pixel) {
-		default: // 16bit
-		    for(k=0;k<10;k++)
-		    {
-		        for(x=vinfo->xres*k/10;x<vinfo->xres*(k+1)/10;x++)
-		        {
+    switch (vinfo->bits_per_pixel) {
+        default: // 16bit
+            for(k=0;k<10;k++)
+            {
+                red = k*255/10;
+                green =k*255/10;
+                blue = k*255/10;
 
-		            for(y=0;y<vinfo->yres;y++)
-		            {
-		                location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
+                red = red>>3;
+                green = green>>2;
+                blue = blue>>3;
 
-		                red = k*255/10;
-		                green =k*255/10;
-		                blue = k*255/10;
+                for(x=vinfo->xres*k/10;x<vinfo->xres*(k+1)/10;x++)
+                {
+                    for(y=0;y<vinfo->yres;y++)
+                    {
+                        location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
 
-		                red = red>>3;
-		                green = green>>2;
-		                blue = blue>>3;
+                        *((unsigned short *)(fbp + location)) = (red << 11) + (green << 5) + (blue << 0);
+                        //*(fbp + location + 1) = 0xe0;
+                    }
+                }
+            }
+            break;
 
-		                *((unsigned short *)(fbp + location)) = (red << 11) + (green << 5) + (blue << 0);
-		                //*(fbp + location + 1) = 0xe0;
-		            }
-		        }
-		    }
-			break;
+        case 32:
+            for(k=0;k<10;k++)
+            {
+                red = k*255/10;
+                green =k*255/10;
+                blue = k*255/10;
 
-		case 32:
-		    for(k=0;k<10;k++)
-		    {
-		        for(x=vinfo->xres*k/10;x<vinfo->xres*(k+1)/10;x++)
-		        {
+                int color = (0xff<<24) + (red << 16) + (green << 8) + (blue);
 
-		            for(y=0;y<vinfo->yres;y++)
-		            {
-		                location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
+                for(x=vinfo->xres*k/10;x<vinfo->xres*(k+1)/10;x++)
+                {
+                    location = x << 2;
+                    *(int *)(fbp + location) = color;
+                }
+            }
 
-		                red = k*255/10;
-		                green =k*255/10;
-		                blue = k*255/10;
-
-		                *(int *)(fbp + location) =(0xff<<24) + (red << 16) + (green << 8) + (blue);
-		            }
-		        }
-		    }
-			break;
-	}
+            for(y=1;y<vinfo->yres;y++)
+            {
+                memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
+            }
+            break;
+    }
 }
 
 void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
@@ -377,92 +378,92 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     int x = 0, y = 0,k;
     long location = 0;
 
-	switch (vinfo->bits_per_pixel) {
-		default: // 16bit
-		    //red
-		    for(y=0;y<vinfo->yres/3;y++)
-		    {
-		        for(x=0;x<vinfo->xres;x++)
-		        {
-		            location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-		            *(fbp + location) = 0xf8;
-		            *(fbp + location + 1) = 0;
+    switch (vinfo->bits_per_pixel) {
+        default: // 16bit
+            //red
+            for(y=0;y<vinfo->yres/3;y++)
+            {
+                for(x=0;x<vinfo->xres;x++)
+                {
+                    location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
+                    *(fbp + location) = 0xf8;
+                    *(fbp + location + 1) = 0;
 
-		            //*(fbp + location + 2) = 0;
+                    //*(fbp + location + 2) = 0;
 
-		            //*(fbp + location + 3) = 0;
-		        }
+                    //*(fbp + location + 3) = 0;
+                }
 
-		    }
+            }
 
-		    //b
-		    for(y=vinfo->yres/3;y<vinfo->yres/3*2;y++)
-		    {
-		        for(x=0;x<vinfo->xres;x++)
-		        {
-		            location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-		            *(fbp + location) = 0;
-		            *(fbp + location + 1) = 0x1f;
+            //b
+            for(y=vinfo->yres/3;y<vinfo->yres/3*2;y++)
+            {
+                for(x=0;x<vinfo->xres;x++)
+                {
+                    location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
+                    *(fbp + location) = 0;
+                    *(fbp + location + 1) = 0x1f;
 
-		            //*(fbp + location + 2) = 0;
+                    //*(fbp + location + 2) = 0;
 
-		            //*(fbp + location + 3) = 0;
-		        }
+                    //*(fbp + location + 3) = 0;
+                }
 
-		    }
+            }
 
-		    //g
-		    for(y=vinfo->yres/3*2;y<vinfo->yres;y++)
-		    {
-		        for(x=0;x<vinfo->xres;x++)
-		        {
-		            location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-		            *(fbp + location) = 0x7;
-		            *(fbp + location + 1) = 0xe0;
+            //g
+            for(y=vinfo->yres/3*2;y<vinfo->yres;y++)
+            {
+                for(x=0;x<vinfo->xres;x++)
+                {
+                    location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
+                    *(fbp + location) = 0x7;
+                    *(fbp + location + 1) = 0xe0;
 
-		            //*(fbp + location + 2) = 255;
+                    //*(fbp + location + 2) = 255;
 
-		            //*(fbp + location + 3) = 0;
-		        }
+                    //*(fbp + location + 3) = 0;
+                }
 
-		    }
-			break;
+            }
+            break;
 
-		case 32:
-		    //red
-		    for(y=0;y<vinfo->yres/3;y++)
-		    {
-		        for(x=0;x<vinfo->xres;x++)
-		        {
-		            location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-		            *(int*)(fbp + location) = 0xffff0000;
-		        }
+        case 32:
+            //red
+            for(x=0;x<vinfo->xres;x++)
+            {
+                location = x << 2;
+                *(int*)(fbp + location) = 0xffff0000;
+            }
+            for(y=1;y<vinfo->yres/3;y++)
+            {
+                memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
+            }
 
-		    }
+            //b
+            for(x=0;x<vinfo->xres;x++)
+            {
+                location = (x << 2) + vinfo->yres/3 * finfo->line_length;
+                *(int*)(fbp + location) = 0xff00ff00;
+            }
+            for(y=vinfo->yres/3+1;y<vinfo->yres/3*2;y++)
+            {
+                memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3 * finfo->line_length, finfo->line_length);
+            }
 
-		    //b
-		    for(y=vinfo->yres/3;y<vinfo->yres/3*2;y++)
-		    {
-		        for(x=0;x<vinfo->xres;x++)
-		        {
-		            location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-		            *(int*)(fbp + location) = 0xff00ff00;
-		        }
-
-		    }
-
-		    //g
-		    for(y=vinfo->yres/3*2;y<vinfo->yres;y++)
-		    {
-		        for(x=0;x<vinfo->xres;x++)
-		        {
-		            location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-		            *(int*)(fbp + location) = 0xff0000ff;
-		        }
-
-		    }
-			break;
-	}
+            //g
+            for(x=0;x<vinfo->xres;x++)
+            {
+                location = (x << 2) + vinfo->yres/3*2 *finfo->line_length;
+                *(int*)(fbp + location) = 0xff0000ff;
+            }
+            for(y=vinfo->yres/3*2+1;y<vinfo->yres;y++)
+            {
+                memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3*2 * finfo->line_length, finfo->line_length);
+            }
+            break;
+    }
 }
 
 int main (int argc, char *argv[])
