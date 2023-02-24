@@ -1,0 +1,2 @@
+获取awk的输出
+eval $(echo "hello/world" | awk -F/ '{printf("str=%s\n", $1)}')
