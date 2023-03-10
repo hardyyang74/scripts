@@ -323,20 +323,21 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
     int x = 0, y = 0,k;
     unsigned char red,green,blue;
     long location = 0;
+    const int scalenum = 8;
 
     switch (vinfo->bits_per_pixel) {
         default: // 16bit
-            for(k=0;k<10;k++)
+            for(k=0;k<scalenum;k++)
             {
-                red = k*255/10;
-                green =k*255/10;
-                blue = k*255/10;
+                red = k*255/scalenum;
+                green =k*255/scalenum;
+                blue = k*255/scalenum;
 
                 red = red>>3;
                 green = green>>2;
                 blue = blue>>3;
 
-                for(x=vinfo->xres*k/10;x<vinfo->xres*(k+1)/10;x++)
+                for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
                 {
                     for(y=0;y<vinfo->yres;y++)
                     {
@@ -350,15 +351,15 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
             break;
 
         case 32:
-            for(k=0;k<10;k++)
+            for(k=0;k<scalenum;k++)
             {
-                red = k*255/10;
-                green =k*255/10;
-                blue = k*255/10;
+                red = k*255/scalenum;
+                green =k*255/scalenum;
+                blue = k*255/scalenum;
 
                 int color = (0xff<<24) + (red << 16) + (green << 8) + (blue);
 
-                for(x=vinfo->xres*k/10;x<vinfo->xres*(k+1)/10;x++)
+                for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
                 {
                     location = x << 2;
                     *(int *)(fbp + location) = color;
@@ -466,6 +467,101 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 }
 
+void drawGradualColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
+{
+    int x = 0, y = 0, k;
+    unsigned char c;
+    long location = 0;
+    int dotnum = vinfo->xres*vinfo->yres;
+
+    switch (vinfo->bits_per_pixel) {
+        default: // 16bit
+            break;
+
+        case 32:
+            location = 0;
+            for(y=0;y<vinfo->yres;y++) {
+                c = y*256/vinfo->yres;
+
+                for(x=0;x<vinfo->xres/4;x++) {
+                    *(int*)(fbp + location) = 0xff000000 | (c<<16);
+                    location +=4 ;
+                }
+                for(;x<vinfo->xres/4*2;x++) {
+                    *(int*)(fbp + location) = 0xff000000 | (c<<8);
+                    location +=4 ;
+                }
+                for(;x<vinfo->xres/4*3;x++) {
+                    *(int*)(fbp + location) = 0xff000000 | c;
+                    location +=4 ;
+                }
+                for(;x<vinfo->xres;x++) {
+                    *(int*)(fbp + location) = 0xff000000 | (c<<16) | (c<<8) | c;
+                    location +=4 ;
+                }
+            }
+            break;
+    }
+}
+
+void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
+{
+    int x = 0, y = 0, kx,ky;
+    unsigned int r=0, g=0, b=0;
+    long location = 0;
+    int dotnum = vinfo->xres*vinfo->yres;
+    const int startcolor=0x0, endcolor=0xffffff;
+    int scalenumx = (vinfo->xres+255)/255;
+    int scalenumy = (vinfo->yres+255)/255;
+
+    switch (vinfo->bits_per_pixel) {
+        default: // 16bit
+            break;
+
+        case 32:
+            location = 0;
+            for(ky=0;ky<scalenumy;ky++) {
+                for(y=vinfo->yres*ky/scalenumy;y<vinfo->yres*(ky+1)/scalenumy;y++) {
+                    switch (ky) {
+                        default:
+                            r++;
+                            break;
+                        case 1:
+                        case 3:
+                        case 5:
+                        case 7:
+                            r--;
+                            break;
+                    }
+
+                    for(kx=0;kx<scalenumx;kx++)
+                    {
+                        for(x=vinfo->xres*kx/scalenumx;x<vinfo->xres*(kx+1)/scalenumx;x++) {
+                            switch (kx) {
+                                default: // g++
+                                    g++;
+                                    break;
+                                case 1:
+                                    b++;
+                                    break;
+                                case 2:
+                                    g--;
+                                    break;
+                                case 3:
+                                    b--;
+                                    break;
+                            }
+
+                            *(int*)(fbp + location) = 0xff000000 | ((r<<16)&0xff0000) | ((g<<8)&0xff00) | (b&0xff);
+                            location +=4 ;
+                        }
+                    }
+                }
+            }
+            break;
+    }
+}
+
 int main (int argc, char *argv[])
 {
     int fp=0;
@@ -537,6 +633,10 @@ int main (int argc, char *argv[])
         drawGrayScale(&finfo, &vinfo, fbp);
     } else if (0 == strcmp("2", argv[1])) { // draw color bar
         drawColorBar(&finfo, &vinfo, fbp);
+    } else if (0 == strcmp("3", argv[1])) { // draw radual color
+        drawGradualColor(&finfo, &vinfo, fbp);
+    } else if (0 == strcmp("4", argv[1])) { // draw radual color
+        drawAllColor(&finfo, &vinfo, fbp);
     } else { // draw image
         renderImage(&vinfo,bmpname,fbp);
     }
