@@ -357,7 +357,7 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
                 green =k*255/scalenum;
                 blue = k*255/scalenum;
 
-                int color = (0xff<<24) + (red << 16) + (green << 8) + (blue);
+                int color = (0xff<<vinfo->transp.offset) + (red << 16) + (green << 8) + (blue);
 
                 for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
                 {
@@ -389,10 +389,6 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
                     location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
                     *(fbp + location) = 0xf8;
                     *(fbp + location + 1) = 0;
-
-                    //*(fbp + location + 2) = 0;
-
-                    //*(fbp + location + 3) = 0;
                 }
 
             }
@@ -405,10 +401,6 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
                     location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
                     *(fbp + location) = 0;
                     *(fbp + location + 1) = 0x1f;
-
-                    //*(fbp + location + 2) = 0;
-
-                    //*(fbp + location + 3) = 0;
                 }
 
             }
@@ -421,10 +413,6 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
                     location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
                     *(fbp + location) = 0x7;
                     *(fbp + location + 1) = 0xe0;
-
-                    //*(fbp + location + 2) = 255;
-
-                    //*(fbp + location + 3) = 0;
                 }
 
             }
@@ -435,29 +423,29 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
             for(x=0;x<vinfo->xres;x++)
             {
                 location = x << 2;
-                *(int*)(fbp + location) = 0xffff0000;
+                *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset);
             }
             for(y=1;y<vinfo->yres/3;y++)
             {
                 memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
             }
 
-            //b
+            // g
             for(x=0;x<vinfo->xres;x++)
             {
                 location = (x << 2) + vinfo->yres/3 * finfo->line_length;
-                *(int*)(fbp + location) = 0xff00ff00;
+                *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->green.offset);
             }
             for(y=vinfo->yres/3+1;y<vinfo->yres/3*2;y++)
             {
                 memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3 * finfo->line_length, finfo->line_length);
             }
 
-            //g
+            // b
             for(x=0;x<vinfo->xres;x++)
             {
                 location = (x << 2) + vinfo->yres/3*2 *finfo->line_length;
-                *(int*)(fbp + location) = 0xff0000ff;
+                *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->blue.offset);
             }
             for(y=vinfo->yres/3*2+1;y<vinfo->yres;y++)
             {
@@ -506,13 +494,10 @@ void drawGradualColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo 
 
 void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
 {
-    int x = 0, y = 0, kx,ky;
-    unsigned int r=0, g=0, b=0;
+    int x = 0, y = 0;
+    int r, g=0, b=0;
     long location = 0;
-    int dotnum = vinfo->xres*vinfo->yres;
-    const int startcolor=0x0, endcolor=0xffffff;
-    int scalenumx = (vinfo->xres+255)/255;
-    int scalenumy = (vinfo->yres+255)/255;
+    char xmin = (vinfo->xres<vinfo->yres);
 
     switch (vinfo->bits_per_pixel) {
         default: // 16bit
@@ -520,42 +505,81 @@ void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
 
         case 32:
             location = 0;
-            for(ky=0;ky<scalenumy;ky++) {
-                for(y=vinfo->yres*ky/scalenumy;y<vinfo->yres*(ky+1)/scalenumy;y++) {
-                    switch (ky) {
-                        default:
-                            r++;
+            for(y=0;y<vinfo->yres;y++) {
+                if (xmin) {
+                    switch (y/255) {
+                        default: // g++
+                            g++;
                             break;
                         case 1:
+                            b++;
+                            break;
+                        case 2:
+                            g--;
+                            break;
                         case 3:
+                            b--;
+                            break;
+                        case 4:
+                            g++;
+                            b++;
+                            break;
                         case 5:
-                        case 7:
-                            r--;
+                            g--;
+                            b -= 2;
+                            break;
+                        case 6:
+                            g += 2;
+                            b--;
                             break;
                     }
+                } else {
+                    if (y & 0x100) {
+                        r = (~y)&0xff;
+                    } else {
+                        r = y & 0xff;
+                    }
+                }
 
-                    for(kx=0;kx<scalenumx;kx++)
-                    {
-                        for(x=vinfo->xres*kx/scalenumx;x<vinfo->xres*(kx+1)/scalenumx;x++) {
-                            switch (kx) {
-                                default: // g++
-                                    g++;
-                                    break;
-                                case 1:
-                                    b++;
-                                    break;
-                                case 2:
-                                    g--;
-                                    break;
-                                case 3:
-                                    b--;
-                                    break;
-                            }
-
-                            *(int*)(fbp + location) = 0xff000000 | ((r<<16)&0xff0000) | ((g<<8)&0xff00) | (b&0xff);
-                            location +=4 ;
+                for(x=0;x<vinfo->xres;x++) {
+                    if (xmin) {
+                        if (x & 0x100) {
+                            r = (~x)&0xff;
+                        } else {
+                            r = x & 0xff;
+                        }
+                    } else {
+                        switch (x/255) {
+                            default: // g++
+                                g++;
+                                break;
+                            case 1:
+                                b++;
+                                break;
+                            case 2:
+                                g--;
+                                break;
+                            case 3:
+                                b--;
+                                break;
+                            case 4:
+                                g++;
+                                b++;
+                                break;
+                            case 5:
+                                g--;
+                                b -= 2;
+                                break;
+                            case 6:
+                                g += 2;
+                                b--;
+                                break;
                         }
                     }
+                    //printf("x:%d r:%d\n", x, r);
+
+                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | ((r&0xff)<<vinfo->red.offset) | ((g&0xff)<<vinfo->green.offset) | ((b&0xff)<<vinfo->blue.offset);
+                    location += 4;
                 }
             }
             break;
@@ -589,7 +613,13 @@ int main (int argc, char *argv[])
     {
         printf("    usage: fbtest source dest\n"
             "       ex1, capture framebuffer: fbtest /dev/fb0 /media/usb1p1/fb.bmp\n"
-            "       ex2, draw bmp to frame buffer: fbtest /media/usb1p1/fb.bmp /dev/fb0\n");
+            "       ex2, draw bmp to frame buffer: fbtest /media/usb1p1/fb.bmp /dev/fb0\n"
+            "       ex3, draw color to frame buffer: fbtest 0~4 /dev/fb0\n"
+            "            0 -- clear screen\n"
+            "            1 -- draw grayscale\n"
+            "            2 -- draw color bar\n"
+            "            3 -- draw radual color\n"
+            "            4 -- all color\n");
         return 1;
     }
 
