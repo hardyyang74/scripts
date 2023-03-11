@@ -472,19 +472,19 @@ void drawGradualColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo 
                 c = y*256/vinfo->yres;
 
                 for(x=0;x<vinfo->xres/4;x++) {
-                    *(int*)(fbp + location) = 0xff000000 | (c<<16);
+                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->red.offset);
                     location +=4 ;
                 }
                 for(;x<vinfo->xres/4*2;x++) {
-                    *(int*)(fbp + location) = 0xff000000 | (c<<8);
+                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->green.offset);
                     location +=4 ;
                 }
                 for(;x<vinfo->xres/4*3;x++) {
-                    *(int*)(fbp + location) = 0xff000000 | c;
+                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->blue.offset);
                     location +=4 ;
                 }
                 for(;x<vinfo->xres;x++) {
-                    *(int*)(fbp + location) = 0xff000000 | (c<<16) | (c<<8) | c;
+                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->red.offset) | (c<<vinfo->green.offset) | (c<<vinfo->blue.offset);
                     location +=4 ;
                 }
             }
@@ -505,6 +505,7 @@ void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
 
         case 32:
             location = 0;
+#if 0
             for(y=0;y<vinfo->yres;y++) {
                 if (xmin) {
                     switch (y/255) {
@@ -534,20 +535,12 @@ void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
                             break;
                     }
                 } else {
-                    if (y & 0x100) {
-                        r = (~y)&0xff;
-                    } else {
-                        r = y & 0xff;
-                    }
+                    r = (y & 0x100) ? (~y)&0xff:(y&0xff);
                 }
 
                 for(x=0;x<vinfo->xres;x++) {
                     if (xmin) {
-                        if (x & 0x100) {
-                            r = (~x)&0xff;
-                        } else {
-                            r = x & 0xff;
-                        }
+                        r = (x & 0x100) ? (~x)&0xff:(x&0xff);
                     } else {
                         switch (x/255) {
                             default: // g++
@@ -582,6 +575,23 @@ void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
                     location += 4;
                 }
             }
+#else
+            for(y=0;y<vinfo->yres;y++) {
+                for(x=0;x<vinfo->xres;x++) {
+                    r = 255-255*(x+1)/vinfo->xres;
+                    b = 255*(x+1)/vinfo->xres;
+                    g = 255*(y+1)/vinfo->yres;
+
+                    //r = (r & 0x100) ? ~r : r;
+                    //g = (g & 0x100) ? ~g : g;
+                    //b = (b & 0x100) ? ~b : b;
+                    //printf("x:%d r:%d\n", x, r);
+
+                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | ((r&0xff)<<vinfo->red.offset) | ((g&0xff)<<vinfo->green.offset) | ((b&0xff)<<vinfo->blue.offset);
+                    location += 4;
+                }
+            }
+#endif
             break;
     }
 }
