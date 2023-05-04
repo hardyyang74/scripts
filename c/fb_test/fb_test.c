@@ -376,7 +376,8 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
 
 void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
 {
-    int x = 0, y = 0,k;
+    int x = 0, y = 0;
+    int linewidth = 5;
     long location = 0;
 
     switch (vinfo->bits_per_pixel) {
@@ -419,19 +420,38 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
             break;
 
         case 32:
+            // white rect
+            for (y=0; y<vinfo->yres; y++) {
+                int color = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset) | (0xff<<vinfo->blue.offset) | (0x80<<vinfo->blue.offset);
+                location = y*finfo->line_length;
+
+                if ((y < linewidth) || (y > vinfo->yres-linewidth) ) {
+                    for(x=0;x<vinfo->xres;x++) {
+                        *(int*)(fbp + location+(x<<2)) = color;
+                    }
+                } else {
+                    for(x=0;x<linewidth;x++) {
+                        *(int*)(fbp + location+(x<<2)) = color;
+                    }
+                    for(x=vinfo->xres-linewidth;x<vinfo->xres;x++) {
+                        *(int*)(fbp + location+(x<<2)) = color;
+                    }
+                }
+            }
+
             //red
-            for(x=0;x<vinfo->xres;x++)
+            for(x=linewidth;x<vinfo->xres-linewidth;x++)
             {
-                location = x << 2;
+                location = x << 2 + linewidth * finfo->line_length;
                 *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset);
             }
-            for(y=1;y<vinfo->yres/3;y++)
+            for(y=linewidth;y<vinfo->yres/3;y++)
             {
                 memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
             }
 
             // g
-            for(x=0;x<vinfo->xres;x++)
+            for(x=linewidth;x<vinfo->xres-linewidth;x++)
             {
                 location = (x << 2) + vinfo->yres/3 * finfo->line_length;
                 *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->green.offset);
@@ -442,14 +462,23 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
             }
 
             // b
-            for(x=0;x<vinfo->xres;x++)
+            for(x=linewidth;x<vinfo->xres-linewidth;x++)
             {
                 location = (x << 2) + vinfo->yres/3*2 *finfo->line_length;
                 *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->blue.offset);
             }
-            for(y=vinfo->yres/3*2+1;y<vinfo->yres;y++)
+            for(y=vinfo->yres/3*2+1;y<vinfo->yres-linewidth;y++)
             {
                 memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3*2 * finfo->line_length, finfo->line_length);
+            }
+
+            // left top
+            for (y=0; y<2*linewidth; y++) {
+                location = y*finfo->line_length;
+
+                for(x=0;x<2*linewidth;x++) {
+                    *(int*)(fbp + location+(x<<2)) = 0xffffffff;
+                }
             }
             break;
     }
