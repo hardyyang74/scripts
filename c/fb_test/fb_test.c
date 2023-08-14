@@ -442,12 +442,12 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
             //red
             for(x=linewidth;x<vinfo->xres-linewidth;x++)
             {
-                location = x << 2 + linewidth * finfo->line_length;
+                location = (x << 2) + linewidth * finfo->line_length;
                 *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset);
             }
             for(y=linewidth;y<vinfo->yres/3;y++)
             {
-                memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
+                memcpy(fbp+y*finfo->line_length, fbp+linewidth * finfo->line_length, finfo->line_length);
             }
 
             // g
@@ -471,6 +471,12 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
             {
                 memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3*2 * finfo->line_length, finfo->line_length);
             }
+#if 0
+            printf("red:0x%08x green:0x%08x blue:0x%08x\n",
+                (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset),
+                (0xff<<vinfo->transp.offset) | (0xff<<vinfo->green.offset),
+                (0xff<<vinfo->transp.offset) | (0xff<<vinfo->blue.offset));
+#endif
 
             // left top
             for (y=0; y<2*linewidth; y++) {
@@ -666,19 +672,19 @@ int main (int argc, char *argv[])
 
     if (fp < 0)
     {
-        printf("Error : Can not open framebuffer device/n");
+        printf("Error : Can not open framebuffer device\n");
         return 1;
     }
 
     if(ioctl(fp,FBIOGET_FSCREENINFO,&finfo))
     {
-        printf("Error reading fixed information/n");
+        printf("Error reading fixed information\n");
         return 2;
     }
 
     if(ioctl(fp,FBIOGET_VSCREENINFO,&vinfo))
     {
-        printf("Error reading variable information/n");
+        printf("Error reading variable information\n");
         return 3;
     }
 
@@ -690,7 +696,7 @@ int main (int argc, char *argv[])
     fbp =(char *) mmap (0, finfo.smem_len, PROT_READ | PROT_WRITE,MAP_SHARED, fp,0);
     if ((int) fbp == -1)
     {
-        printf ("Error: failed to map framebuffer device tomemory./n");
+        printf ("Error: failed to map framebuffer device tomemory.\n");
         return 4;
     }
 
