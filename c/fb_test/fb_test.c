@@ -486,6 +486,15 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
                     *(int*)(fbp + location+(x<<2)) = 0xffffffff;
                 }
             }
+
+            // right bottom
+            for (y=vinfo->yres-2*linewidth; y<vinfo->yres; y++) {
+                location = y*finfo->line_length;
+
+                for(x=vinfo->xres-2*linewidth;x<vinfo->xres;x++) {
+                    *(int*)(fbp + location+(x<<2)) = 0xff<<vinfo->transp.offset;
+                }
+            }
             break;
     }
 }
@@ -712,6 +721,8 @@ int main (int argc, char *argv[])
         drawGradualColor(&finfo, &vinfo, fbp);
     } else if (0 == strcmp("4", argv[1])) { // draw radual color
         drawAllColor(&finfo, &vinfo, fbp);
+    } else if (0 == strcmp("5", argv[1])) { // white
+        memset(fbp, 0xff, finfo.smem_len );
     } else { // draw image
         renderImage(&vinfo,bmpname,fbp);
     }
