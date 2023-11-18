@@ -7,6 +7,28 @@
 #include <sys/mman.h>
 #include <string.h>
 
+char BIT_MASK[] = {0, 0x1, 0x3, 0x7, 0xf, 0x1f, 0x3f, 0x7f, 0xff};
+
+#define TRANSP_V (0xff&BIT_MASK[vinfo->transp.length])
+#define RED_V (0xff&BIT_MASK[vinfo->red.length])
+#define GREEN_V (0xff&BIT_MASK[vinfo->green.length])
+#define BLUE_V (0xff&BIT_MASK[vinfo->blue.length])
+
+#define TRANSP_VAL (TRANSP_V<<vinfo->transp.offset)
+#define RED_VAL (RED_V<<vinfo->red.offset)
+#define GREEN_VAL (GREEN_V<<vinfo->green.offset)
+#define BLUE_VAL (BLUE_V<<vinfo->blue.offset)
+
+#define PIXEL_COLOR(location, color) \
+do \
+{ \
+    if (2 == pixelen) { \
+        *(short*)(fbp + (location)) = (color); \
+    } else { \
+        *(int*)(fbp + (location)) = (color); \
+    } \
+} while(0)
+
 //14byte文件头
 typedef struct
 {
@@ -21,8 +43,8 @@ typedef struct
 typedef struct
 {
     int ciSize;//BITMAPINFOHEADER所占的字节数
-    int  ciWidth;//宽度
-    int  ciHeight;//高度
+    unsigned int  ciWidth;//宽度
+    unsigned int  ciHeight;//高度
     short ciPlanes;//目标设备的位平面数，值为1
     short ciBitCount;//每个像素的位数, 1, 4, 8, 16, 24 or 32
     /*
@@ -218,7 +240,7 @@ void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
     PIXEL rgb_quad[3];//定义调色板
     unsigned char* ptr8;
     int bpl;
-    int x, y;
+    unsigned int x, y;
     int ret;
     char rgb24[3];
 
@@ -320,323 +342,187 @@ void storeImage(struct fb_var_screeninfo *var, char *name, void* fb)
 
 void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
 {
-    int x = 0, y = 0,k;
+    unsigned int x = 0, y = 0,k;
     unsigned char red,green,blue;
-    long location = 0;
-    const int scalenum = 8;
+    const unsigned int scalenum = 8;
 
-    switch (vinfo->bits_per_pixel) {
-        default: // 16bit
-            for(k=0;k<scalenum;k++)
-            {
-                red = k*255/scalenum;
-                green =k*255/scalenum;
-                blue = k*255/scalenum;
+    char pixelen = vinfo->bits_per_pixel/8;
 
-                red = red>>3;
-                green = green>>2;
-                blue = blue>>3;
+    for(k=0;k<scalenum;k++)
+    {
+        red = k*RED_V/scalenum;
+        green =k*GREEN_V/scalenum;
+        blue = k*BLUE_V/scalenum;
 
-                for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
-                {
-                    for(y=0;y<vinfo->yres;y++)
-                    {
-                        location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
+        int color = TRANSP_VAL
+            + (red << vinfo->red.offset) + (green << vinfo->green.offset) + (blue<<vinfo->blue.offset);
 
-                        *((unsigned short *)(fbp + location)) = (red << 11) + (green << 5) + (blue << 0);
-                        //*(fbp + location + 1) = 0xe0;
-                    }
-                }
-            }
-            break;
+        for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
+        {
+            PIXEL_COLOR(x * pixelen, color);
+        }
+    }
 
-        case 32:
-            for(k=0;k<scalenum;k++)
-            {
-                red = k*255/scalenum;
-                green =k*255/scalenum;
-                blue = k*255/scalenum;
-
-                int color = (0xff<<vinfo->transp.offset) + (red << 16) + (green << 8) + (blue);
-
-                for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
-                {
-                    location = x << 2;
-                    *(int *)(fbp + location) = color;
-                }
-            }
-
-            for(y=1;y<vinfo->yres;y++)
-            {
-                memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
-            }
-            break;
+    for(y=1;y<vinfo->yres;y++)
+    {
+        memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
     }
 }
 
 void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
 {
-    int x = 0, y = 0;
-    int linewidth = 5;
-    long location = 0;
+    int color = 0;
+    unsigned int x = 0, y = 0, sy = 0;
+    unsigned int linewidth = 5;
+    unsigned long location = 0;
 
-    switch (vinfo->bits_per_pixel) {
-        default: // 16bit
-            //red
-            for(y=0;y<vinfo->yres/3;y++)
-            {
-                for(x=0;x<vinfo->xres;x++)
-                {
-                    location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-                    *(fbp + location) = 0xf8;
-                    *(fbp + location + 1) = 0;
-                }
+    char pixelen = vinfo->bits_per_pixel/8;
 
+    //red
+    color = TRANSP_VAL | RED_VAL;
+    location = sy = 0;
+    for(x=0;x<vinfo->xres;x++)
+    {
+        PIXEL_COLOR(location, color);
+        location += pixelen;
+    }
+    for(y = 1;y<vinfo->yres/3;y++)
+    {
+        memcpy(fbp+y*finfo->line_length, fbp+sy*finfo->line_length, finfo->line_length);
+    }
+
+    // g
+    color = TRANSP_VAL | GREEN_VAL;
+    location = y * finfo->line_length;
+    sy = y;
+    for(x=0;x<vinfo->xres;x++)
+    {
+        PIXEL_COLOR(location, color);
+        location += pixelen;
+    }
+    for(y++;y<vinfo->yres*2/3;y++)
+    {
+        memcpy(fbp+y*finfo->line_length, fbp+sy*finfo->line_length, finfo->line_length);
+    }
+
+    // b
+    color = TRANSP_VAL | BLUE_VAL;
+    location = y * finfo->line_length;
+    sy = y;
+    for(x=0;x<vinfo->xres;x++)
+    {
+        PIXEL_COLOR(location, color);
+        location += pixelen;
+    }
+    for(y++;y<vinfo->yres-linewidth;y++)
+    {
+        memcpy(fbp+y*finfo->line_length, fbp+sy*finfo->line_length, finfo->line_length);
+    }
+
+    // white rect
+    color = TRANSP_VAL
+        | (RED_V<<vinfo->red.offset)
+        | (GREEN_V<<vinfo->green.offset)
+        | ((BLUE_V>>1)<<vinfo->blue.offset);
+    for (y=0; y<vinfo->yres; y++) {
+        location = y *finfo->line_length;
+
+        if ((y < linewidth) || (y > (vinfo->yres-linewidth-1)) ) {
+            for(x=0;x<vinfo->xres;x++) {
+                PIXEL_COLOR(location+x*pixelen, color);
             }
-
-            //b
-            for(y=vinfo->yres/3;y<vinfo->yres/3*2;y++)
-            {
-                for(x=0;x<vinfo->xres;x++)
-                {
-                    location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-                    *(fbp + location) = 0;
-                    *(fbp + location + 1) = 0x1f;
-                }
-
+        } else {
+            for(x=0;x<linewidth;x++) {
+                PIXEL_COLOR(location+x*pixelen, color);
             }
-
-            //g
-            for(y=vinfo->yres/3*2;y<vinfo->yres;y++)
-            {
-                for(x=0;x<vinfo->xres;x++)
-                {
-                    location = x * (vinfo->bits_per_pixel / 8) + y *finfo->line_length;
-                    *(fbp + location) = 0x7;
-                    *(fbp + location + 1) = 0xe0;
-                }
-
+            for(x=vinfo->xres-linewidth;x<vinfo->xres;x++) {
+                PIXEL_COLOR(location+x*pixelen, color);
             }
-            break;
+        }
+    }
 
-        case 32:
-            // white rect
-            for (y=0; y<vinfo->yres; y++) {
-                int color = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset) | (0xff<<vinfo->blue.offset) | (0x80<<vinfo->blue.offset);
-                location = y*finfo->line_length;
+    // left top
+    color = TRANSP_VAL|RED_VAL|GREEN_VAL|BLUE_VAL;
+    for (y=0; y<2*linewidth; y++) {
+        location = y *finfo->line_length;
+        for(x=0;x<2*linewidth;x++) {
+            PIXEL_COLOR(location+x*pixelen, color);
+        }
+    }
 
-                if ((y < linewidth) || (y > vinfo->yres-linewidth) ) {
-                    for(x=0;x<vinfo->xres;x++) {
-                        *(int*)(fbp + location+(x<<2)) = color;
-                    }
-                } else {
-                    for(x=0;x<linewidth;x++) {
-                        *(int*)(fbp + location+(x<<2)) = color;
-                    }
-                    for(x=vinfo->xres-linewidth;x<vinfo->xres;x++) {
-                        *(int*)(fbp + location+(x<<2)) = color;
-                    }
-                }
-            }
-
-            //red
-            for(x=linewidth;x<vinfo->xres-linewidth;x++)
-            {
-                location = (x << 2) + linewidth * finfo->line_length;
-                *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset);
-            }
-            for(y=linewidth;y<vinfo->yres/3;y++)
-            {
-                memcpy(fbp+y*finfo->line_length, fbp+linewidth * finfo->line_length, finfo->line_length);
-            }
-
-            // g
-            for(x=linewidth;x<vinfo->xres-linewidth;x++)
-            {
-                location = (x << 2) + vinfo->yres/3 * finfo->line_length;
-                *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->green.offset);
-            }
-            for(y=vinfo->yres/3+1;y<vinfo->yres/3*2;y++)
-            {
-                memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3 * finfo->line_length, finfo->line_length);
-            }
-
-            // b
-            for(x=linewidth;x<vinfo->xres-linewidth;x++)
-            {
-                location = (x << 2) + vinfo->yres/3*2 *finfo->line_length;
-                *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (0xff<<vinfo->blue.offset);
-            }
-            for(y=vinfo->yres/3*2+1;y<vinfo->yres-linewidth;y++)
-            {
-                memcpy(fbp+y*finfo->line_length, fbp+vinfo->yres/3*2 * finfo->line_length, finfo->line_length);
-            }
-#if 0
-            printf("red:0x%08x green:0x%08x blue:0x%08x\n",
-                (0xff<<vinfo->transp.offset) | (0xff<<vinfo->red.offset),
-                (0xff<<vinfo->transp.offset) | (0xff<<vinfo->green.offset),
-                (0xff<<vinfo->transp.offset) | (0xff<<vinfo->blue.offset));
-#endif
-
-            // left top
-            for (y=0; y<2*linewidth; y++) {
-                location = y*finfo->line_length;
-
-                for(x=0;x<2*linewidth;x++) {
-                    *(int*)(fbp + location+(x<<2)) = 0xffffffff;
-                }
-            }
-
-            // right bottom
-            for (y=vinfo->yres-2*linewidth; y<vinfo->yres; y++) {
-                location = y*finfo->line_length;
-
-                for(x=vinfo->xres-2*linewidth;x<vinfo->xres;x++) {
-                    *(int*)(fbp + location+(x<<2)) = 0xff<<vinfo->transp.offset;
-                }
-            }
-            break;
+    // right bottom
+    color = TRANSP_VAL;
+    for (y=vinfo->yres-2*linewidth; y<vinfo->yres; y++) {
+        location = y *finfo->line_length;
+        for(x=vinfo->xres-2*linewidth;x<vinfo->xres;x++) {
+            PIXEL_COLOR(location+x*pixelen, color);
+        }
     }
 }
 
 void drawGradualColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
 {
-    int x = 0, y = 0, k;
-    unsigned char c;
-    long location = 0;
-    int dotnum = vinfo->xres*vinfo->yres;
+    unsigned int x = 0, y = 0, k;
+    unsigned int color = 0;
+    unsigned long location = 0;
+    unsigned int dotnum = vinfo->xres*vinfo->yres;
 
-    switch (vinfo->bits_per_pixel) {
-        default: // 16bit
-            break;
+    char pixelen = vinfo->bits_per_pixel/8;
 
-        case 32:
-            location = 0;
-            for(y=0;y<vinfo->yres;y++) {
-                c = y*256/vinfo->yres;
+    location = 0;
+    for(y=0;y<vinfo->yres;y++) {
+        color = TRANSP_VAL | ((RED_V*y/vinfo->yres)<<vinfo->red.offset);
+        for(x=0;x<vinfo->xres/4;x++) {
+            PIXEL_COLOR(location, color);
+            location += pixelen;
+        }
 
-                for(x=0;x<vinfo->xres/4;x++) {
-                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->red.offset);
-                    location +=4 ;
-                }
-                for(;x<vinfo->xres/4*2;x++) {
-                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->green.offset);
-                    location +=4 ;
-                }
-                for(;x<vinfo->xres/4*3;x++) {
-                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->blue.offset);
-                    location +=4 ;
-                }
-                for(;x<vinfo->xres;x++) {
-                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | (c<<vinfo->red.offset) | (c<<vinfo->green.offset) | (c<<vinfo->blue.offset);
-                    location +=4 ;
-                }
-            }
-            break;
+        color = TRANSP_VAL | ((GREEN_V*y/vinfo->yres)<<vinfo->green.offset);
+        for(;x<vinfo->xres*2/4;x++) {
+            PIXEL_COLOR(location, color);
+            location += pixelen;
+        }
+
+        color = TRANSP_VAL | ((BLUE_V*y/vinfo->yres)<<vinfo->blue.offset);
+        for(;x<vinfo->xres*3/4;x++) {
+            PIXEL_COLOR(location, color);
+            location += pixelen;
+        }
+
+        color = TRANSP_VAL | ((RED_V*y/vinfo->yres)<<vinfo->red.offset)
+            | ((GREEN_V*y/vinfo->yres)<<vinfo->green.offset)
+            | ((BLUE_V*y/vinfo->yres)<<vinfo->blue.offset);
+        for(;x<vinfo->xres;x++) {
+            PIXEL_COLOR(location, color);
+            location += pixelen;
+        }
     }
 }
 
 void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
 {
-    int x = 0, y = 0;
-    int r, g=0, b=0;
-    long location = 0;
+    unsigned int x = 0, y = 0;
+    unsigned int r, g=0, b=0;
+    unsigned long location = 0;
     char xmin = (vinfo->xres<vinfo->yres);
 
-    switch (vinfo->bits_per_pixel) {
-        default: // 16bit
-            break;
+    char pixelen = vinfo->bits_per_pixel/8;
 
-        case 32:
-            location = 0;
-#if 0
-            for(y=0;y<vinfo->yres;y++) {
-                if (xmin) {
-                    switch (y/255) {
-                        default: // g++
-                            g++;
-                            break;
-                        case 1:
-                            b++;
-                            break;
-                        case 2:
-                            g--;
-                            break;
-                        case 3:
-                            b--;
-                            break;
-                        case 4:
-                            g++;
-                            b++;
-                            break;
-                        case 5:
-                            g--;
-                            b -= 2;
-                            break;
-                        case 6:
-                            g += 2;
-                            b--;
-                            break;
-                    }
-                } else {
-                    r = (y & 0x100) ? (~y)&0xff:(y&0xff);
-                }
+    location = 0;
+    for(y=0;y<vinfo->yres;y++) {
+        for(x=0;x<vinfo->xres;x++) {
+            r = RED_V-RED_V*(x+1)/vinfo->xres;
+            b = GREEN_V*(x+1)/vinfo->xres;
+            g = BLUE_V*(y+1)/vinfo->yres;
 
-                for(x=0;x<vinfo->xres;x++) {
-                    if (xmin) {
-                        r = (x & 0x100) ? (~x)&0xff:(x&0xff);
-                    } else {
-                        switch (x/255) {
-                            default: // g++
-                                g++;
-                                break;
-                            case 1:
-                                b++;
-                                break;
-                            case 2:
-                                g--;
-                                break;
-                            case 3:
-                                b--;
-                                break;
-                            case 4:
-                                g++;
-                                b++;
-                                break;
-                            case 5:
-                                g--;
-                                b -= 2;
-                                break;
-                            case 6:
-                                g += 2;
-                                b--;
-                                break;
-                        }
-                    }
-                    //printf("x:%d r:%d\n", x, r);
+            //r = (r & 0x100) ? ~r : r;
+            //g = (g & 0x100) ? ~g : g;
+            //b = (b & 0x100) ? ~b : b;
+            //printf("x:%d r:%d\n", x, r);
 
-                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | ((r&0xff)<<vinfo->red.offset) | ((g&0xff)<<vinfo->green.offset) | ((b&0xff)<<vinfo->blue.offset);
-                    location += 4;
-                }
-            }
-#else
-            for(y=0;y<vinfo->yres;y++) {
-                for(x=0;x<vinfo->xres;x++) {
-                    r = 255-255*(x+1)/vinfo->xres;
-                    b = 255*(x+1)/vinfo->xres;
-                    g = 255*(y+1)/vinfo->yres;
-
-                    //r = (r & 0x100) ? ~r : r;
-                    //g = (g & 0x100) ? ~g : g;
-                    //b = (b & 0x100) ? ~b : b;
-                    //printf("x:%d r:%d\n", x, r);
-
-                    *(int*)(fbp + location) = (0xff<<vinfo->transp.offset) | ((r&0xff)<<vinfo->red.offset) | ((g&0xff)<<vinfo->green.offset) | ((b&0xff)<<vinfo->blue.offset);
-                    location += 4;
-                }
-            }
-#endif
-            break;
+            PIXEL_COLOR(location, TRANSP_VAL | (r<<vinfo->red.offset) | (g<<vinfo->green.offset) | (b<<vinfo->blue.offset));
+            location += pixelen;
+        }
     }
 }
 
