@@ -9,15 +9,10 @@
 
 char BIT_MASK[] = {0, 0x1, 0x3, 0x7, 0xf, 0x1f, 0x3f, 0x7f, 0xff};
 
-#define TRANSP_V (0xff&BIT_MASK[vinfo->transp.length])
-#define RED_V (0xff&BIT_MASK[vinfo->red.length])
-#define GREEN_V (0xff&BIT_MASK[vinfo->green.length])
-#define BLUE_V (0xff&BIT_MASK[vinfo->blue.length])
+#define TRGB_V(c) (0xff&BIT_MASK[vinfo->c.length])
+#define TRGB_VAL(c) (TRGB_V(c)<<vinfo->c.offset)
+#define RGB_2_FBRGB(c,v) (((v>>(8-vinfo->c.length))<<vinfo->c.offset))
 
-#define TRANSP_VAL (TRANSP_V<<vinfo->transp.offset)
-#define RED_VAL (RED_V<<vinfo->red.offset)
-#define GREEN_VAL (GREEN_V<<vinfo->green.offset)
-#define BLUE_VAL (BLUE_V<<vinfo->blue.offset)
 
 #define PIXEL_COLOR(location, color) \
 do \
@@ -121,7 +116,7 @@ unsigned short rgb_24_2_565(const unsigned char *rgb24)
     return (unsigned short)(((b >> 3) << 11) |((g >> 2) << 5) |(r >> 3));
 }
 
-void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
+void renderImage(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char *name, void* fbp)
 {
     FILE *fin = (FILE*)fopen(name, "rb");
     BITMAPFILEHEADER fhead;
@@ -134,6 +129,9 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
     int x, y;
     int copy_w, copy_h;
     int ret;
+
+    unsigned long location = 0;
+    char pixelen = vinfo->bits_per_pixel/8;
 
     if(fin == NULL)
     {
@@ -165,68 +163,39 @@ void renderImage(struct fb_var_screeninfo *var, char *name, void* fb)
     ret = fread(tmpbuf, 1, bminfo.ciWidth*bminfo.ciHeight*bminfo.ciBitCount/8, fin);
     fclose(fin);
 
-    copy_w = (var->xres <= bminfo.ciWidth) ? var->xres : bminfo.ciWidth;
-    copy_h = (var->yres <= bminfo.ciHeight) ? var->yres : bminfo.ciHeight;
+    copy_w = (vinfo->xres <= bminfo.ciWidth) ? vinfo->xres : bminfo.ciWidth;
+    copy_h = (vinfo->yres <= bminfo.ciHeight) ? vinfo->yres : bminfo.ciHeight;
 
     // copy image into framebuffer
-    ptr8 = (unsigned char*) fb;
+    ptr8 = (unsigned char*) fbp;
     bpl = bminfo.ciWidth*bminfo.ciBitCount/8;
-    switch(var->bits_per_pixel)
+
+    if (24 == bminfo.ciBitCount )
     {
-    case 32:
-        if (24 == bminfo.ciBitCount )
+        for(y=0;y<copy_h;y++)
         {
-            for(y=0;y<copy_h;y++)
+            unsigned long l_src = y*bpl;
+            location = (vinfo->yres-y-1) * finfo->line_length;
+            for(x=0;x<copy_w;x++)
             {
-                for(x=0;x<copy_w;x++)
-                {
-                    ptr8[((var->yres-y-1)* var->xres + x)*4] = tmpbuf[y*bpl+x*3];
-                    ptr8[((var->yres-y-1)* var->xres + x)*4+1] = tmpbuf[y*bpl+x*3+1];
-                    ptr8[((var->yres-y-1)* var->xres + x)*4+2] = tmpbuf[y*bpl+x*3+2];
-                    ptr8[((var->yres-y-1)* var->xres + x)*4+3] = 255;
-                }
+                PIXEL_COLOR(location,
+                    TRGB_VAL(transp)|RGB_2_FBRGB(red,tmpbuf[l_src+2])|RGB_2_FBRGB(green,tmpbuf[l_src+1])|RGB_2_FBRGB(blue,tmpbuf[l_src]));
+
+                location += pixelen;
+                l_src += 3;
             }
         }
-        else if (16 == bminfo.ciBitCount  &&  3 == bminfo.ciCompress)
+    }
+    else if (16 == bminfo.ciBitCount  &&  3 == bminfo.ciCompress)
+    {
+        for(y=0;y<copy_h;y++)
         {
-            for(y=0;y<copy_h;y++)
+            for(x=0;x<copy_w;x++)
             {
-                for(x=0;x<copy_w;x++)
-                {
-                    rgb565_2_rgb24(ptr8+((var->yres-y-1)* var->xres + x)*4, *(short*)(tmpbuf+y*bpl+x*2));
-                    ptr8[((var->yres-y-1)* var->xres + x)*4+3] = 255;
-                }
+                rgb565_2_rgb24(ptr8+((vinfo->yres-y-1)* vinfo->xres + x)*4, *(short*)(tmpbuf+y*bpl+x*2));
+                ptr8[((vinfo->yres-y-1)* vinfo->xres + x)*4+3] = 255;
             }
         }
-
-        break;
-
-    case 24:
-        break;
-
-    case 16:
-        if (24 == bminfo.ciBitCount)
-        {
-            for(y=0;y<copy_h;y++)
-            {
-                for(x=0;x<copy_w;x++)
-                {
-                    *(short*)(ptr8+((var->yres-y-1) * var->xres + x)*2) = rgb_24_2_565(tmpbuf + y*bpl+x*3);
-                }
-            }
-        }
-        else // rgb565
-        {
-            for(y=0;y<copy_h;y++)
-            {
-                memcpy(ptr8+(var->yres-y-1) * var->xres *2, tmpbuf + y*bpl, bpl);
-            }
-        }
-        break;
-
-    default:
-        break;
-
     }
 
     free(tmpbuf);
@@ -350,11 +319,11 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
 
     for(k=0;k<scalenum;k++)
     {
-        red = k*RED_V/scalenum;
-        green =k*GREEN_V/scalenum;
-        blue = k*BLUE_V/scalenum;
+        red = k*TRGB_V(red)/scalenum;
+        green =k*TRGB_V(green)/scalenum;
+        blue = k*TRGB_V(blue)/scalenum;
 
-        int color = TRANSP_VAL
+        int color = TRGB_VAL(transp)
             + (red << vinfo->red.offset) + (green << vinfo->green.offset) + (blue<<vinfo->blue.offset);
 
         for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
@@ -379,7 +348,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     char pixelen = vinfo->bits_per_pixel/8;
 
     //red
-    color = TRANSP_VAL | RED_VAL;
+    color = TRGB_VAL(transp) | TRGB_VAL(red);
     location = sy = 0;
     for(x=0;x<vinfo->xres;x++)
     {
@@ -392,7 +361,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 
     // g
-    color = TRANSP_VAL | GREEN_VAL;
+    color = TRGB_VAL(transp) | TRGB_VAL(green);
     location = y * finfo->line_length;
     sy = y;
     for(x=0;x<vinfo->xres;x++)
@@ -406,7 +375,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 
     // b
-    color = TRANSP_VAL | BLUE_VAL;
+    color = TRGB_VAL(transp) | TRGB_VAL(blue);
     location = y * finfo->line_length;
     sy = y;
     for(x=0;x<vinfo->xres;x++)
@@ -420,10 +389,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 
     // white rect
-    color = TRANSP_VAL
-        | (RED_V<<vinfo->red.offset)
-        | (GREEN_V<<vinfo->green.offset)
-        | ((BLUE_V>>1)<<vinfo->blue.offset);
+    color = TRGB_VAL(transp) | TRGB_VAL(red) | TRGB_VAL(green) | ((TRGB_V(blue)>>1)<<vinfo->blue.offset);
     for (y=0; y<vinfo->yres; y++) {
         location = y *finfo->line_length;
 
@@ -442,7 +408,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 
     // left top
-    color = TRANSP_VAL|RED_VAL|GREEN_VAL|BLUE_VAL;
+    color = TRGB_VAL(transp)|TRGB_VAL(red)|TRGB_VAL(green)|TRGB_VAL(blue);
     for (y=0; y<2*linewidth; y++) {
         location = y *finfo->line_length;
         for(x=0;x<2*linewidth;x++) {
@@ -451,7 +417,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 
     // right bottom
-    color = TRANSP_VAL;
+    color = TRGB_VAL(transp);
     for (y=vinfo->yres-2*linewidth; y<vinfo->yres; y++) {
         location = y *finfo->line_length;
         for(x=vinfo->xres-2*linewidth;x<vinfo->xres;x++) {
@@ -471,27 +437,27 @@ void drawGradualColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo 
 
     location = 0;
     for(y=0;y<vinfo->yres;y++) {
-        color = TRANSP_VAL | ((RED_V*y/vinfo->yres)<<vinfo->red.offset);
+        color = TRGB_VAL(transp) | ((TRGB_V(red)*y/vinfo->yres)<<vinfo->red.offset);
         for(x=0;x<vinfo->xres/4;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
         }
 
-        color = TRANSP_VAL | ((GREEN_V*y/vinfo->yres)<<vinfo->green.offset);
+        color = TRGB_VAL(transp) | ((TRGB_V(green)*y/vinfo->yres)<<vinfo->green.offset);
         for(;x<vinfo->xres*2/4;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
         }
 
-        color = TRANSP_VAL | ((BLUE_V*y/vinfo->yres)<<vinfo->blue.offset);
+        color = TRGB_VAL(transp) | ((TRGB_V(blue)*y/vinfo->yres)<<vinfo->blue.offset);
         for(;x<vinfo->xres*3/4;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
         }
 
-        color = TRANSP_VAL | ((RED_V*y/vinfo->yres)<<vinfo->red.offset)
-            | ((GREEN_V*y/vinfo->yres)<<vinfo->green.offset)
-            | ((BLUE_V*y/vinfo->yres)<<vinfo->blue.offset);
+        color = TRGB_VAL(transp) | ((TRGB_V(red)*y/vinfo->yres)<<vinfo->red.offset)
+            | ((TRGB_V(green)*y/vinfo->yres)<<vinfo->green.offset)
+            | ((TRGB_V(blue)*y/vinfo->yres)<<vinfo->blue.offset);
         for(;x<vinfo->xres;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
@@ -511,16 +477,16 @@ void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     location = 0;
     for(y=0;y<vinfo->yres;y++) {
         for(x=0;x<vinfo->xres;x++) {
-            r = RED_V-RED_V*(x+1)/vinfo->xres;
-            b = GREEN_V*(x+1)/vinfo->xres;
-            g = BLUE_V*(y+1)/vinfo->yres;
+            r = TRGB_V(red)-TRGB_V(red)*(x+1)/vinfo->xres;
+            b = TRGB_V(green)*(x+1)/vinfo->xres;
+            g = TRGB_V(blue)*(y+1)/vinfo->yres;
 
             //r = (r & 0x100) ? ~r : r;
             //g = (g & 0x100) ? ~g : g;
             //b = (b & 0x100) ? ~b : b;
             //printf("x:%d r:%d\n", x, r);
 
-            PIXEL_COLOR(location, TRANSP_VAL | (r<<vinfo->red.offset) | (g<<vinfo->green.offset) | (b<<vinfo->blue.offset));
+            PIXEL_COLOR(location, TRGB_VAL(transp) | (r<<vinfo->red.offset) | (g<<vinfo->green.offset) | (b<<vinfo->blue.offset));
             location += pixelen;
         }
     }
@@ -610,7 +576,7 @@ int main (int argc, char *argv[])
     } else if (0 == strcmp("5", argv[1])) { // white
         memset(fbp, 0xff, finfo.smem_len );
     } else { // draw image
-        renderImage(&vinfo,bmpname,fbp);
+        renderImage(&finfo, &vinfo,bmpname,fbp);
     }
 
     munmap(fbp, finfo.smem_len);

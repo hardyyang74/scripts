@@ -1,6 +1,6 @@
-c/fb_test/fbtest
+c/test/fbtest
+c/test/uartest
 c/rockchip/imgData
 c/rockchip/miniboot_reload_dh5021a.img
 c/rockchip/sendevent
 c/rockchip/xs5013
-c/test/uartest
