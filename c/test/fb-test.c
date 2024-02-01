@@ -13,7 +13,6 @@ char BIT_MASK[] = {0, 0x1, 0x3, 0x7, 0xf, 0x1f, 0x3f, 0x7f, 0xff};
 #define TRGB_VAL(c) (TRGB_V(c)<<vinfo->c.offset)
 #define RGB_2_FBRGB(c,v) (((v>>(8-vinfo->c.length))<<vinfo->c.offset))
 
-
 #define PIXEL_COLOR(location, color) \
 do \
 { \
@@ -319,12 +318,8 @@ void drawGrayScale(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vi
 
     for(k=0;k<scalenum;k++)
     {
-        red = k*TRGB_V(red)/scalenum;
-        green =k*TRGB_V(green)/scalenum;
-        blue = k*TRGB_V(blue)/scalenum;
-
         int color = TRGB_VAL(transp)
-            + (red << vinfo->red.offset) + (green << vinfo->green.offset) + (blue<<vinfo->blue.offset);
+            + RGB_2_FBRGB(red, 255*k/scalenum) + RGB_2_FBRGB(green, 255*k/scalenum) + RGB_2_FBRGB(blue, 255*k/scalenum);
 
         for(x=vinfo->xres*k/scalenum;x<vinfo->xres*(k+1)/scalenum;x++)
         {
@@ -389,7 +384,7 @@ void drawColorBar(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     }
 
     // white rect
-    color = TRGB_VAL(transp) | TRGB_VAL(red) | TRGB_VAL(green) | ((TRGB_V(blue)>>1)<<vinfo->blue.offset);
+    color = TRGB_VAL(transp) | TRGB_VAL(red) | TRGB_VAL(green) | RGB_2_FBRGB(blue, 128);
     for (y=0; y<vinfo->yres; y++) {
         location = y *finfo->line_length;
 
@@ -437,27 +432,27 @@ void drawGradualColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo 
 
     location = 0;
     for(y=0;y<vinfo->yres;y++) {
-        color = TRGB_VAL(transp) | ((TRGB_V(red)*y/vinfo->yres)<<vinfo->red.offset);
+        color = TRGB_VAL(transp) | RGB_2_FBRGB(red, 255*y/vinfo->yres);
         for(x=0;x<vinfo->xres/4;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
         }
 
-        color = TRGB_VAL(transp) | ((TRGB_V(green)*y/vinfo->yres)<<vinfo->green.offset);
+        color = TRGB_VAL(transp) | RGB_2_FBRGB(green, 255*y/vinfo->yres);
         for(;x<vinfo->xres*2/4;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
         }
 
-        color = TRGB_VAL(transp) | ((TRGB_V(blue)*y/vinfo->yres)<<vinfo->blue.offset);
+        color = TRGB_VAL(transp) | RGB_2_FBRGB(blue, 255*y/vinfo->yres);
         for(;x<vinfo->xres*3/4;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
         }
 
-        color = TRGB_VAL(transp) | ((TRGB_V(red)*y/vinfo->yres)<<vinfo->red.offset)
-            | ((TRGB_V(green)*y/vinfo->yres)<<vinfo->green.offset)
-            | ((TRGB_V(blue)*y/vinfo->yres)<<vinfo->blue.offset);
+        color = TRGB_VAL(transp) | RGB_2_FBRGB(red, 255*y/vinfo->yres)
+            | RGB_2_FBRGB(green, 255*y/vinfo->yres)
+            | RGB_2_FBRGB(blue, 255*y/vinfo->yres);
         for(;x<vinfo->xres;x++) {
             PIXEL_COLOR(location, color);
             location += pixelen;
@@ -477,18 +472,91 @@ void drawAllColor(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vin
     location = 0;
     for(y=0;y<vinfo->yres;y++) {
         for(x=0;x<vinfo->xres;x++) {
-            r = TRGB_V(red)-TRGB_V(red)*(x+1)/vinfo->xres;
-            b = TRGB_V(green)*(x+1)/vinfo->xres;
-            g = TRGB_V(blue)*(y+1)/vinfo->yres;
+            r = RGB_2_FBRGB(red, 255-255*(x+1)/vinfo->xres);
+            g = RGB_2_FBRGB(green, 255*(y+1)/vinfo->yres);
+            b = RGB_2_FBRGB(blue, 255*(x+1)/vinfo->xres);
 
-            //r = (r & 0x100) ? ~r : r;
-            //g = (g & 0x100) ? ~g : g;
-            //b = (b & 0x100) ? ~b : b;
-            //printf("x:%d r:%d\n", x, r);
-
-            PIXEL_COLOR(location, TRGB_VAL(transp) | (r<<vinfo->red.offset) | (g<<vinfo->green.offset) | (b<<vinfo->blue.offset));
+            PIXEL_COLOR(location, TRGB_VAL(transp) | r | g | b);
             location += pixelen;
         }
+    }
+}
+
+void drawPercent(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp, int percent, int reverse)
+{
+    unsigned int x = 0, y = 0;
+    unsigned int c = RGB_2_FBRGB(transp, 255)|RGB_2_FBRGB(red, 128)|RGB_2_FBRGB(green, 128)|RGB_2_FBRGB(blue, 128);
+    unsigned long location = 0;
+    char xmin = (vinfo->xres<vinfo->yres);
+
+    char pixelen = vinfo->bits_per_pixel/8;
+
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    // clear screen
+    for (x=0; x<vinfo->xres; x++) {
+        //PIXEL_COLOR(x*pixelen, TRGB_VAL(transp));
+    }
+    for (y=1; y<vinfo->yres; y++) {
+        memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
+    }
+
+    if (xmin) {
+        char linelen = 100; // unit: pixel
+        char *linebuf = (char*)malloc(pixelen*linelen);
+        const int gapW=20;
+
+        // draw line
+        for (x=0;x<linelen;x++) {
+            if (2 == pixelen) {
+                *(short*)(linebuf+x*pixelen) = c;
+            } else {
+                *(int*)(linebuf+x*pixelen) = c;
+            }
+        }
+
+        // copy line
+        int progressEnd = (vinfo->yres-(gapW<<1)) * percent/100 + gapW;
+        for(y=gapW;y<progressEnd;y++) {
+            if (reverse) {
+                location = (vinfo->yres-y)*finfo->line_length + (finfo->line_length-linelen*pixelen)/2;
+            } else {
+                location = y*finfo->line_length + (finfo->line_length-linelen*pixelen)/2;
+            }
+            memcpy(fbp+location, linebuf, pixelen*linelen);
+        }
+
+        free(linebuf);
+    } else {
+        const int gapW=20, progressW=100;
+        int startY=(vinfo->yres-progressW)>>1, endY=(vinfo->yres+progressW)>>1;
+
+        int linelen = (vinfo->xres-(gapW<<1)) * percent/100; // unit: pixel
+        char *linebuf = (char*)malloc(pixelen*linelen);
+
+        // draw line
+        for (x=0;x<linelen;x++) {
+            if (2 == pixelen) {
+                *(short*)(linebuf+x*pixelen) = c;
+            } else {
+                *(int*)(linebuf+x*pixelen) = c;
+            }
+        }
+
+        // copy line
+        for(y=startY;y<endY;y++) {
+            int startX=gapW, endX=startX+linelen;
+
+            if (reverse) {
+                location = y*finfo->line_length + (vinfo->xres-gapW-linelen)*pixelen;
+            } else {
+                location = y*finfo->line_length + startX*pixelen;
+            }
+            memcpy(fbp+location, linebuf, pixelen*linelen);
+        }
+
+        free(linebuf);
     }
 }
 
@@ -502,7 +570,7 @@ int main (int argc, char *argv[])
     char devfb[128] = "/dev/fb0";
     char bmpname[128] = "/media/usb1p1/fb.bmp";
 
-    if (3 == argc)
+    if (argc >= 3 )
     {
         if (NULL != strstr(argv[1], "/dev/") )
         {
@@ -520,12 +588,16 @@ int main (int argc, char *argv[])
         printf("    usage: fbtest source dest\n"
             "       ex1, capture framebuffer: fbtest /dev/fb0 /media/usb1p1/fb.bmp\n"
             "       ex2, draw bmp to frame buffer: fbtest /media/usb1p1/fb.bmp /dev/fb0\n"
-            "       ex3, draw color to frame buffer: fbtest 0~4 /dev/fb0\n"
+            "       ex3, draw color to frame buffer: fbtest 0~6 /dev/fb0\n"
             "            0 -- clear screen\n"
             "            1 -- draw grayscale\n"
             "            2 -- draw color bar\n"
             "            3 -- draw radual color\n"
-            "            4 -- all color\n");
+            "            4 -- all color\n"
+            "            5 -- white\n"
+            "            6 -- percent\n"
+            "                 para3 is percent\n"
+            "                 para4: direction is reverse\n");
         return 1;
     }
 
@@ -575,6 +647,11 @@ int main (int argc, char *argv[])
         drawAllColor(&finfo, &vinfo, fbp);
     } else if (0 == strcmp("5", argv[1])) { // white
         memset(fbp, 0xff, finfo.smem_len );
+    } else if (0 == strcmp("6", argv[1])) { // percent
+        int reverse=0, percent=100;
+        if (argc >= 4) percent = atoi(argv[3]);
+        if (argc >= 5) reverse = atoi(argv[4]);
+        drawPercent(&finfo, &vinfo, fbp, percent, reverse);
     } else { // draw image
         renderImage(&finfo, &vinfo,bmpname,fbp);
     }
