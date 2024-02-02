@@ -6,6 +6,7 @@
 #include <linux/fb.h>
 #include <sys/mman.h>
 #include <string.h>
+#include <sys/ioctl.h>
 
 char BIT_MASK[] = {0, 0x1, 0x3, 0x7, 0xf, 0x1f, 0x3f, 0x7f, 0xff};
 
@@ -113,6 +114,21 @@ unsigned short rgb_24_2_565(const unsigned char *rgb24)
     unsigned int r = rgb24[0], g = rgb24[1], b = rgb24[2];
 
     return (unsigned short)(((b >> 3) << 11) |((g >> 2) << 5) |(r >> 3));
+}
+
+void clearScreen(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char* fbp)
+{
+    unsigned int x = 0, y = 0;
+
+    char pixelen = vinfo->bits_per_pixel/8;
+
+    int black = TRGB_VAL(transp);
+    for (x=0; x<vinfo->xres; x++) {
+        PIXEL_COLOR(x*pixelen, black);
+    }
+    for (y=1; y<vinfo->yres; y++) {
+        memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
+    }
 }
 
 void renderImage(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinfo, char *name, void* fbp)
@@ -494,14 +510,6 @@ void drawPercent(struct fb_fix_screeninfo *finfo, struct fb_var_screeninfo *vinf
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
 
-    // clear screen
-    for (x=0; x<vinfo->xres; x++) {
-        //PIXEL_COLOR(x*pixelen, TRGB_VAL(transp));
-    }
-    for (y=1; y<vinfo->yres; y++) {
-        memcpy(fbp+y*finfo->line_length, fbp, finfo->line_length);
-    }
-
     if (xmin) {
         char linelen = 100; // unit: pixel
         char *linebuf = (char*)malloc(pixelen*linelen);
@@ -621,7 +629,7 @@ int main (int argc, char *argv[])
         return 3;
     }
 
-    printf("------------xres:%d,yres:%d,bits_per_pixel:%d\n",vinfo.xres,vinfo.yres,vinfo.bits_per_pixel);
+    printf("------------xres:%d,yres:%d,bits_per_pixel:%d memlen:%d\n",vinfo.xres,vinfo.yres,vinfo.bits_per_pixel,finfo.smem_len);
     printf("------------R:offset:%d,length:%d,msb_right:%d\n",vinfo.red.offset,vinfo.red.length,vinfo.red.msb_right);
     printf("------------G:offset:%d,length:%d,msb_right:%d\n",vinfo.green.offset,vinfo.green.length,vinfo.green.msb_right);
     printf("------------B:offset:%d,length:%d,msb_right:%d\n",vinfo.blue.offset,vinfo.blue.length,vinfo.blue.msb_right);
@@ -633,25 +641,32 @@ int main (int argc, char *argv[])
         return 4;
     }
 
+    printf("------------fbp:0x%x smem_start:0x%x mmio_start:0x%x\n", fbp, finfo.smem_start, finfo.mmio_start);
+
     if (NULL != strstr(argv[1], "/dev/fb") ){ // save screen into image
-        storeImage(&vinfo,bmpname,fbp);
+        storeImage(&vinfo,bmpname,fbp + finfo.line_length*vinfo.yoffset);
     } else if (0 == strcmp("0", argv[1])) { // clean fb
-        memset(fbp, 0, finfo.smem_len );
+        memset(fbp, 0, finfo.smem_len);
     } else if (0 == strcmp("1", argv[1])) { // draw grayscale
-        drawGrayScale(&finfo, &vinfo, fbp);
+        drawGrayScale(&finfo, &vinfo, fbp + finfo.line_length*vinfo.yoffset);
     } else if (0 == strcmp("2", argv[1])) { // draw color bar
-        drawColorBar(&finfo, &vinfo, fbp);
+        drawColorBar(&finfo, &vinfo, fbp + finfo.line_length*vinfo.yoffset);
     } else if (0 == strcmp("3", argv[1])) { // draw radual color
-        drawGradualColor(&finfo, &vinfo, fbp);
+        drawGradualColor(&finfo, &vinfo, fbp + finfo.line_length*vinfo.yoffset);
     } else if (0 == strcmp("4", argv[1])) { // draw radual color
-        drawAllColor(&finfo, &vinfo, fbp);
+        drawAllColor(&finfo, &vinfo, fbp + finfo.line_length*vinfo.yoffset);
     } else if (0 == strcmp("5", argv[1])) { // white
         memset(fbp, 0xff, finfo.smem_len );
     } else if (0 == strcmp("6", argv[1])) { // percent
         int reverse=0, percent=100;
         if (argc >= 4) percent = atoi(argv[3]);
         if (argc >= 5) reverse = atoi(argv[4]);
-        drawPercent(&finfo, &vinfo, fbp, percent, reverse);
+
+        //ioctl(fp, FBIO_WAITFORVSYNC, NULL);
+        //vinfo.yoffset = (0==vinfo.yoffset) ? vinfo.yres : 0;
+        clearScreen(&finfo, &vinfo, fbp + finfo.line_length*vinfo.yoffset);
+        drawPercent(&finfo, &vinfo, fbp + finfo.line_length*vinfo.yoffset, percent, reverse);
+        //ioctl(fp, FBIOPAN_DISPLAY, &vinfo);
     } else { // draw image
         renderImage(&finfo, &vinfo,bmpname,fbp);
     }
