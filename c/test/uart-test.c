@@ -105,6 +105,7 @@ int sendData(int fd, char *send_buf, int Len)
 int main(int argc, char** argv) {
     char *format = NULL;
     int fd = 0, fd2 = 0;
+    char dev[32] = {0};
     char buf[1024] = {0};
     int tryTimes;
     char c;
@@ -114,7 +115,12 @@ int main(int argc, char** argv) {
         //return 0;
     }
 
-    fd = open(TTY_NAME, O_RDWR | O_NOCTTY | O_NDELAY);
+    if (argc >= 2  && 0 == memcmp("/dev/ttyX", argv[1], strlen("/dev/ttyX"))) {
+        strcpy(dev, argv[1]);
+    } else {
+        strcpy(dev, TTY_NAME);
+    }
+    fd = open(dev, O_RDWR | O_NOCTTY | O_NDELAY);
     if (-1 == fd) {
         perror("Can't Open Serial Port");
         return (-1);
@@ -143,7 +149,7 @@ int main(int argc, char** argv) {
 
 #if 1
     tryTimes = 0x0fffffff;
-    strcpy(buf, "Are you muart3?");
+    sprintf(buf, "Are you %s?", dev);
     int chlen = strlen(buf);
 
     int needsend = 0;
